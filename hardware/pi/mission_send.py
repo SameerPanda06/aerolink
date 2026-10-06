@@ -45,7 +45,7 @@ def find_classifier(explicit):
     candidates.extend(
         [
             Path(__file__).with_name("classifier.py"),
-            Path(__file__).parents[1] / "pi" / "classifier.py",
+            Path(__file__).parents[2] / "pi" / "classifier.py",
             Path("/home/sameer/aerolink/aerolink-main/pi/classifier.py"),
         ]
     )
