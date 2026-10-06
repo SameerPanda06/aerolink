@@ -51,16 +51,17 @@ try:
     delivered = 0
 
     for sequence in range(1, PACKET_COUNT + 1):
-        imu = sensor.read()
+        # Two decimal places preserve useful motion data and keep the
+        # JSON payload below AeroLink's 247-byte application limit.
+        imu = {
+            key: round(value, 2)
+            for key, value in sensor.read().items()
+        }
         telemetry = {
             "schema_version": "1.0",
             "timestamp": int(time.time()),
             "device": "AEROLINK-01",
-            "classification": {
-                "status": "UNAVAILABLE",
-                "class": None,
-                "confidence": None,
-            },
+            "classification": "UNAVAILABLE",
             "imu": imu,
         }
 
