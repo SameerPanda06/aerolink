@@ -99,20 +99,20 @@ bool verifyImageHash() {
   imageFile.seek(0, SeekSet);
   mbedtls_sha256_context context;
   mbedtls_sha256_init(&context);
-  if (mbedtls_sha256_starts_ret(&context, 0) != 0) {
+  if (mbedtls_sha256_starts(&context, 0) != 0) {
     mbedtls_sha256_free(&context);
     return false;
   }
   uint8_t buffer[256];
   while (imageFile.available()) {
     size_t count = imageFile.read(buffer, sizeof(buffer));
-    if (count == 0 || mbedtls_sha256_update_ret(&context, buffer, count) != 0) {
+    if (count == 0 || mbedtls_sha256_update(&context, buffer, count) != 0) {
       mbedtls_sha256_free(&context);
       return false;
     }
   }
   uint8_t calculated[32];
-  bool ok = mbedtls_sha256_finish_ret(&context, calculated) == 0 &&
+  bool ok = mbedtls_sha256_finish(&context, calculated) == 0 &&
             memcmp(calculated, imageExpectedHash, sizeof(calculated)) == 0;
   mbedtls_sha256_free(&context);
   Serial.print("[IMAGE] sha256=");
