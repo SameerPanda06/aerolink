@@ -51,6 +51,7 @@
 #define IMAGE_CHUNK 0xC1
 #define IMAGE_MAX_CHUNKS 2048
 #define IMAGE_BITMAP_BYTES (IMAGE_MAX_CHUNKS / 8)
+#define IMAGE_PATH "/aerolink_image.part"
 
 uint8_t readReg(uint8_t reg) {
   digitalWrite(NSS, LOW); SPI.transfer(reg & 0x7F);
@@ -96,7 +97,9 @@ void printHash(const uint8_t *hash) {
 bool verifyImageHash() {
   if (!imageFile) return false;
   imageFile.flush();
-  imageFile.seek(0, SeekSet);
+  imageFile.close();
+  File readFile = LittleFS.open(IMAGE_PATH, "r");
+  if (!readFile) return false;
   mbedtls_sha256_context context;
   mbedtls_sha256_init(&context);
   if (mbedtls_sha256_starts(&context, 0) != 0) {
@@ -104,13 +107,15 @@ bool verifyImageHash() {
     return false;
   }
   uint8_t buffer[256];
-  while (imageFile.available()) {
-    size_t count = imageFile.read(buffer, sizeof(buffer));
+  while (readFile.available()) {
+    size_t count = readFile.read(buffer, sizeof(buffer));
     if (count == 0 || mbedtls_sha256_update(&context, buffer, count) != 0) {
+      readFile.close();
       mbedtls_sha256_free(&context);
       return false;
     }
   }
+  readFile.close();
   uint8_t calculated[32];
   bool ok = mbedtls_sha256_finish(&context, calculated) == 0 &&
             memcmp(calculated, imageExpectedHash, sizeof(calculated)) == 0;
@@ -144,7 +149,8 @@ bool parseManifest(const uint8_t *payload, uint8_t length) {
   uint16_t expectedTotal = (uint16_t)((size + chunkSize - 1) / chunkSize);
   if (total != expectedTotal) return false;
   resetImageState();
-  imageFile = LittleFS.open("/aerolink_image.part", "w+");
+  LittleFS.remove(IMAGE_PATH);
+  imageFile = LittleFS.open(IMAGE_PATH, "w");
   if (!imageFile) return false;
   imageTransferId = transfer;
   imageSize = size;
@@ -166,13 +172,32 @@ bool handleImageChunk(const uint8_t *payload, uint8_t length) {
   uint16_t index = ((uint16_t)payload[5] << 8) | payload[6];
   uint16_t total = ((uint16_t)payload[7] << 8) | payload[8];
   uint16_t bytes = length - 9;
-  if (transfer != imageTransferId || total != imageTotalChunks || index >= imageTotalChunks) return false;
+  if (transfer != imageTransferId || total != imageTotalChunks || index >= imageTotalChunks) {
+    Serial.println("[IMAGE] REJECTED chunk identity");
+    return false;
+  }
   uint32_t offset = (uint32_t)index * imageChunkSize;
   uint32_t remaining = imageSize - offset;
   uint16_t expected = remaining < imageChunkSize ? (uint16_t)remaining : imageChunkSize;
-  if (bytes != expected) return false;
+  if (bytes != expected) {
+    Serial.printf("[IMAGE] REJECTED chunk size got=%u expected=%u\n", bytes, expected);
+    return false;
+  }
   if (!imageBitSet(index)) {
-    if (!imageFile.seek(offset, SeekSet) || imageFile.write(payload + 9, bytes) != bytes) return false;
+    if (!imageFile) {
+      Serial.println("[IMAGE] REJECTED file unavailable");
+      return false;
+    }
+    if (!imageFile.seek(offset, SeekSet)) {
+      Serial.printf("[IMAGE] REJECTED seek offset=%lu\n", (unsigned long)offset);
+      return false;
+    }
+    size_t written = imageFile.write(payload + 9, bytes);
+    imageFile.flush();
+    if (written != bytes) {
+      Serial.printf("[IMAGE] REJECTED write got=%u expected=%u\n", (unsigned)written, bytes);
+      return false;
+    }
     imageSetBit(index);
     imageReceivedChunks++;
   }
@@ -181,7 +206,7 @@ bool handleImageChunk(const uint8_t *payload, uint8_t length) {
   if (imageReceivedChunks == imageTotalChunks) {
     bool valid = verifyImageHash();
     imageFile.close();
-    Serial.printf("[IMAGE] %s path=/aerolink_image.part\n", valid ? "COMPLETE sha256_ok=1" : "CHECKSUM_FAILED sha256_ok=0");
+    Serial.printf("[IMAGE] %s path=%s\n", valid ? "COMPLETE sha256_ok=1" : "CHECKSUM_FAILED sha256_ok=0", IMAGE_PATH);
     imageActive = false;
   }
   return true;

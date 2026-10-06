@@ -29,7 +29,11 @@ def send_chunk(radio, sequence, payload):
     packet = data(sequence, payload)
     for attempt in range(1, RETRIES + 1):
         print(f"[LINK] chunk={sequence} attempt={attempt}/{RETRIES}")
-        radio.send(packet)
+        try:
+            radio.send(packet)
+        except (TimeoutError, OSError) as error:
+            print(f"[LINK] TX error: {error}")
+            continue
         deadline = time.monotonic() + ACK_TIMEOUT
         while time.monotonic() < deadline:
             incoming = radio.receive(timeout=0.1)
