@@ -49,3 +49,19 @@ python3 pi/live_telemetry.py 5
 The ESP32 should print five valid DATA packets and send five ACKs. Classification is deliberately marked `UNAVAILABLE` until the real model is integrated.
 
 Do not add image or ML payloads until the reliable test passes. The old image protocol is a separate format and must be adapted after this baseline is stable.
+
+## Prepared image chunk test
+
+After the Neuronex classifier and JPEG preparation have produced a file such as
+`/tmp/IMG-000004_q60.jpg`, leave the ESP32 monitor running and send the file
+from the Pi:
+
+```bash
+python3 pi/image_transfer_test.py IMG-000004 /tmp/IMG-000004_q60.jpg
+```
+
+The script sends 200-byte chunks inside acknowledged AeroLink DATA packets and
+prints a final `chunks acknowledged` result. This milestone validates delivery
+of every chunk; the current ESP32 firmware does not yet reassemble or save the
+image. Binary chunk payloads may look unreadable in the serial monitor, while
+the ACK lines remain the expected result.
