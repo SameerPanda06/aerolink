@@ -27,6 +27,7 @@ path.
 | `mpu6050.py` | MPU6050 I2C sensor reader |
 | `live_telemetry.py` | Sends live MPU6050 telemetry with ACKs |
 | `image_transfer_test.py` | Sends a prepared JPEG in acknowledged chunks |
+| `mission_send.py` | Runs classification, JPEG preparation, metadata, and image transfer |
 
 The classifier and mission preparation scripts are currently maintained in the
 Neuronex Pi project. Their expected locations are:
@@ -86,6 +87,11 @@ python3 /home/sameer/aerolink/aerolink-main/pi/image_prepare.py \
   60
 
 python3 image_transfer_test.py IMG-000004 /tmp/IMG-000004_q60.jpg
+
+# Complete one-image mission (classifier.py must exist in the documented Pi path)
+python3 mission_send.py \
+  /home/sameer/neuronex/missions/NEX-000001_IMG-000004.jpg \
+  --image-id IMG-000004
 ```
 
 The current image test validates that every chunk is acknowledged. ESP32 image

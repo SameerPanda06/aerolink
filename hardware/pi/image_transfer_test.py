@@ -11,8 +11,12 @@ import sys
 import time
 from pathlib import Path
 
-from packet import PacketError, TYPE_ACK, data, parse
-from radio import SX1278
+try:
+    from packet import PacketError, TYPE_ACK, data, parse
+    from radio import SX1278
+except ModuleNotFoundError:  # Support importing as hardware.pi.image_transfer_test.
+    from .packet import PacketError, TYPE_ACK, data, parse
+    from .radio import SX1278
 
 
 MARKER = 0xC1
