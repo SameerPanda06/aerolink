@@ -36,6 +36,7 @@ RULES = {
     "CLOUDY": ("defer", 2, 60),
     "NOT_VISIBLE": ("discard", 3, 40),
 }
+MANIFEST_MARKER = 0xC0
 
 
 def find_classifier(explicit):
@@ -138,13 +139,25 @@ def main():
             "compression_ms": round(compression_ms, 1),
         }
         metadata_payload = compact_metadata(metadata)
+        manifest_payload = (
+            bytes([MANIFEST_MARKER])
+            + transfer_id.to_bytes(4, "big")
+            + len(blob).to_bytes(4, "big")
+            + CHUNK_SIZE.to_bytes(2, "big")
+            + total.to_bytes(2, "big")
+            + bytes.fromhex(digest)
+        )
         print(f"[META] {len(metadata_payload)} bytes: {json.dumps(metadata)}")
+        print(f"[MANIFEST] {len(manifest_payload)} bytes sha256={digest}")
 
         radio = SX1278()
         try:
             radio.initialize()
             if not send_chunk(radio, 0, metadata_payload):
                 print("[FAIL] metadata was not acknowledged")
+                return 1
+            if not send_chunk(radio, 0, manifest_payload):
+                print("[FAIL] image manifest was not acknowledged")
                 return 1
             for index in range(total):
                 chunk = blob[index * CHUNK_SIZE : (index + 1) * CHUNK_SIZE]

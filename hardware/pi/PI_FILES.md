@@ -27,7 +27,7 @@ path.
 | `mpu6050.py` | MPU6050 I2C sensor reader |
 | `live_telemetry.py` | Sends live MPU6050 telemetry with ACKs |
 | `image_transfer_test.py` | Sends a prepared JPEG in acknowledged chunks |
-| `mission_send.py` | Runs classification, JPEG preparation, metadata, and image transfer |
+| `mission_send.py` | Runs classification, JPEG preparation, manifest, metadata, and image transfer |
 
 The classifier and mission preparation scripts are currently maintained in the
 Neuronex Pi project. Their expected locations are:
@@ -94,8 +94,9 @@ python3 mission_send.py \
   --image-id IMG-000004
 ```
 
-The current image test validates that every chunk is acknowledged. ESP32 image
-reassembly and SHA-256 validation are the next hardware milestone.
+The mission sender now sends a manifest and the ESP32 receiver stores chunks in
+LittleFS and validates the reconstructed image SHA-256. The low-level image
+test remains available when only chunk ACK behavior is needed.
 
 ## Important paths and roles
 

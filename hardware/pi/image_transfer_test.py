@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Send one prepared image as acknowledged AeroLink DATA chunks.
 
-This is a transport test: the ESP32 acknowledges every chunk, but the current
-receiver does not yet reassemble or save the image.
+This low-level utility sends chunks only. Use ``mission_send.py`` for the
+manifest, classification metadata, and complete mission flow.
 """
 
 import hashlib
