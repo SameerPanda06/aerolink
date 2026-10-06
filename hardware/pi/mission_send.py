@@ -62,9 +62,13 @@ def run_classifier(script, image):
         capture_output=True,
         text=True,
     )
-    for line in reversed(result.stdout.splitlines()):
+    output = result.stdout.strip()
+    candidates = [output]
+    candidates.extend(output[position:] for position, char in enumerate(output) if char == "{")
+    decoder = json.JSONDecoder()
+    for candidate in reversed(candidates):
         try:
-            value = json.loads(line)
+            value, _ = decoder.raw_decode(candidate)
         except json.JSONDecodeError:
             continue
         if isinstance(value, dict) and ("class" in value or "predicted_class" in value):
