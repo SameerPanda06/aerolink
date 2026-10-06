@@ -29,25 +29,35 @@ The transport is working. The last successful test used sample IMU and classific
 
 Do not change `pi/radio.py`, `pi/packet.py`, or the ESP32 radio configuration while adding the next layer unless a test exposes a transport defect.
 
-## Next milestone: live MPU6050 telemetry
+## Completed: live MPU6050 telemetry
 
 ### Code changes
 
-- [ ] Add `pi/mpu6050.py` for I2C bus 1, address `0x68`.
-- [ ] Wake the sensor through register `0x6B`.
-- [ ] Read accelerometer registers `0x3B`, `0x3D`, `0x3F` using scale `16384.0`.
-- [ ] Read gyroscope registers `0x43`, `0x45`, `0x47` using scale `131.0`.
-- [ ] Add `pi/live_telemetry.py` using the existing DATA/ACK transport.
-- [ ] Replace sample IMU values with one real sensor reading per packet.
-- [ ] Keep classification explicitly marked as `UNAVAILABLE` until the real model is connected.
+- [x] Add `pi/mpu6050.py` for I2C bus 1, address `0x68`.
+- [x] Wake the sensor through register `0x6B`.
+- [x] Read accelerometer and gyroscope values with the documented scales.
+- [x] Add `pi/live_telemetry.py` using the existing DATA/ACK transport.
+- [x] Send real sensor values in five packets with five matching ACKs.
+- [x] Keep classification explicitly marked as `UNAVAILABLE` until the real model is connected.
 
 ### Acceptance test
 
-- [ ] `i2cdetect -y 1` shows `0x68`.
-- [ ] Five live packets are sent.
-- [ ] All five receive matching ACKs.
-- [ ] ESP32 output shows the actual changing sensor values.
-- [ ] No packet exceeds the 247-byte application payload limit.
+- [x] `i2cdetect -y 1` shows `0x68`.
+- [x] Five live packets are sent.
+- [x] All five receive matching ACKs.
+- [x] ESP32 output shows changing sensor values.
+- [x] No packet exceeds the 247-byte application payload limit.
+
+## Next milestone: image-classification metadata
+
+Before implementing this phase, provide the actual `.tflite` model, labels, preprocessing rules, and one known input/output example. The classifier must be validated locally before its result is sent over LoRa.
+
+- [ ] Locate the model and labels on the Pi.
+- [ ] Confirm input shape, colour order, normalization, and output mapping.
+- [ ] Add `pi/classifier.py` with a deterministic single-image API.
+- [ ] Run local inference and record class, confidence, and latency.
+- [ ] Add real classification metadata to telemetry while keeping IMU data.
+- [ ] Send and acknowledge five classification telemetry packets.
 
 ## Following milestones
 
@@ -85,7 +95,7 @@ Do not change `pi/radio.py`, `pi/packet.py`, or the ESP32 radio configuration wh
 
 ## Progress
 
-Six transport/setup milestones are complete. The next required milestone is live MPU telemetry. The remaining work is sensor integration, classification integration, image transfer, ground software, dashboard, and final acceptance.
+Six transport/setup milestones and the MPU6050 telemetry milestone are complete. The next required milestone is image-classification metadata. The remaining work is classifier integration, image transfer, ground software, dashboard, and final acceptance.
 
 ## Working rule
 
