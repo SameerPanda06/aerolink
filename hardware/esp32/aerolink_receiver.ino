@@ -292,7 +292,10 @@ void loop() {
   } else if (!(payloadLength == 45 && payload[0] == IMAGE_MANIFEST)) {
     Serial.printf("[RX] VALID DATA seq=%u payload=%u\n", sequence, payloadLength);
   }
-  uint8_t ack[8]; uint8_t ackLength = buildAck(sequence, ack); delay(50);
+  // Allow the Pi SX1278 to finish switching from TX to RX before the
+  // downlink ACK is emitted. This is especially important for 217-byte image
+  // packets, whose processing path is longer than the small link-test frames.
+  uint8_t ack[8]; uint8_t ackLength = buildAck(sequence, ack); delay(200);
   if (transmit(ack, ackLength)) Serial.printf("[TX] ACK SENT seq=%u\n", sequence);
   else Serial.printf("[TX] ACK FAILED seq=%u\n", sequence);
   startRX();

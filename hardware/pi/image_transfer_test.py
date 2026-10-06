@@ -21,7 +21,7 @@ except ModuleNotFoundError:  # Support importing as hardware.pi.image_transfer_t
 
 MARKER = 0xC1
 CHUNK_SIZE = 200
-ACK_TIMEOUT = 1.0
+ACK_TIMEOUT = 2.0
 RETRIES = 3
 TURNAROUND_DELAY = 0.20
 
