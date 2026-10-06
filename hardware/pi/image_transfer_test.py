@@ -23,6 +23,7 @@ MARKER = 0xC1
 CHUNK_SIZE = 200
 ACK_TIMEOUT = 1.0
 RETRIES = 3
+TURNAROUND_DELAY = 0.20
 
 
 def send_chunk(radio, sequence, payload):
@@ -45,6 +46,9 @@ def send_chunk(radio, sequence, payload):
                 continue
             if reply["type"] == TYPE_ACK and reply["sequence"] == sequence:
                 print(f"[LINK] ACK chunk={sequence} RSSI={incoming[1]} SNR={incoming[2]:.2f}")
+                # The ESP32 switches from TX back to RX after its ACK. Give
+                # the SX1278 pair time to complete that half-duplex turn.
+                time.sleep(TURNAROUND_DELAY)
                 return True
     return False
 
