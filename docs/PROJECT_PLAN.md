@@ -48,16 +48,16 @@ Do not change `pi/radio.py`, `pi/packet.py`, or the ESP32 radio configuration wh
 - [x] ESP32 output shows changing sensor values.
 - [x] No packet exceeds the 247-byte application payload limit.
 
-## Next milestone: image-classification metadata
+## Completed: image-classification metadata
 
 Before implementing this phase, provide the actual `.tflite` model, labels, preprocessing rules, and one known input/output example. The classifier must be validated locally before its result is sent over LoRa.
 
-- [ ] Locate the model and labels on the Pi.
-- [ ] Confirm input shape, colour order, normalization, and output mapping.
-- [ ] Add `pi/classifier.py` with a deterministic single-image API.
-- [ ] Run local inference and record class, confidence, and latency.
-- [ ] Add real classification metadata to telemetry while keeping IMU data.
-- [ ] Send and acknowledge five classification telemetry packets.
+- [x] Locate the model and labels on the Pi.
+- [x] Confirm input shape and output mapping (`224x224`, `CLEAR/CLOUDY/NOT_VISIBLE`).
+- [x] Add and validate the Pi classifier adapter.
+- [x] Run local inference and record class, confidence, and latency.
+- [x] Apply the mission rule and JPEG quality decision.
+- [x] Send and acknowledge classification metadata over LoRa.
 
 ## Following milestones
 
@@ -70,8 +70,10 @@ Before implementing this phase, provide the actual `.tflite` model, labels, prep
 
 ### Image transfer
 
-- [ ] Define a versioned metadata packet.
-- [ ] Define image transfer ID, chunk number, total chunks, chunk size, and checksum.
+- [x] Define an initial image chunk envelope with transfer ID, chunk number, total chunks, and SHA-256-derived transfer ID.
+- [x] Add `pi/image_transfer_test.py` for acknowledged 200-byte chunks.
+- [ ] Run the chunk delivery test with a prepared JPEG.
+- [ ] Define a versioned image metadata packet for the final protocol.
 - [ ] Implement missing-chunk status and selective retransmission.
 - [ ] Reassemble and checksum an image on the receiver.
 - [ ] Test interruption and resume behavior.
