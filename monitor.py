@@ -11,7 +11,10 @@ try:
                        dsrdtr=False, rtscts=False) as ser:
         time.sleep(0.2)
         print(f"[MONITOR] Connected to {PORT} at {BAUD}")
-        with open("esp32_serial.log", "a", buffering=1) as log:
+        # Binary image chunks can contain arbitrary bytes.  Keep the monitor
+        # alive when a chunk happens to split across a newline or contains
+        # characters that Windows' default code page cannot encode.
+        with open("esp32_serial.log", "a", buffering=1, encoding="utf-8", errors="replace") as log:
             while True:
                 line = ser.readline()
                 if not line:

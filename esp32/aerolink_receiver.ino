@@ -123,7 +123,16 @@ void loop() {
   uint16_t calculated = crc16(packet, length - 2);
   if (received != calculated) { Serial.println("[RX] APPLICATION CRC ERROR"); return; }
   uint16_t sequence = ((uint16_t)packet[3] << 8) | packet[4];
-  Serial.printf("[RX] VALID DATA seq=%u payload=%u\n", sequence, payloadLength);
+  if (payloadLength >= 9 && packet[6] == 0xC1) {
+    uint32_t transfer = ((uint32_t)packet[7] << 24) | ((uint32_t)packet[8] << 16) |
+                        ((uint32_t)packet[9] << 8) | packet[10];
+    uint16_t chunk = ((uint16_t)packet[11] << 8) | packet[12];
+    uint16_t total = ((uint16_t)packet[13] << 8) | packet[14];
+    Serial.printf("[RX] IMAGE CHUNK seq=%u chunk=%u/%u bytes=%u transfer=%08lX\n",
+                  sequence, chunk + 1, total, payloadLength - 9, (unsigned long)transfer);
+  } else {
+    Serial.printf("[RX] VALID DATA seq=%u payload=%u\n", sequence, payloadLength);
+  }
   uint8_t ack[8]; uint8_t ackLength = buildAck(sequence, ack); delay(50);
   if (transmit(ack, ackLength)) Serial.printf("[TX] ACK SENT seq=%u\n", sequence);
   else Serial.printf("[TX] ACK FAILED seq=%u\n", sequence);
