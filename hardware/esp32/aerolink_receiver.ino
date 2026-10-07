@@ -51,10 +51,12 @@
 #define PROTOCOL_VERSION 0x01
 #define TYPE_DATA 0x01
 #define TYPE_ACK 0x02
+#define TYPE_STATUS 0x03
 #define HEADER_SIZE 6
 #define CRC_SIZE 2
 #define IMAGE_MANIFEST 0xC0
 #define IMAGE_CHUNK 0xC1
+#define IMAGE_STATUS 0xC2
 #define IMAGE_MAX_CHUNKS 2048
 #define IMAGE_BITMAP_BYTES (IMAGE_MAX_CHUNKS / 8)
 #define IMAGE_PATH "/aerolink_image.part"
@@ -80,6 +82,8 @@ uint16_t crc16(const uint8_t *data, uint16_t length) {
 }
 
 bool imageActive = false;
+bool imageStatusPending = false;
+uint8_t imageStatusCode = 0;
 uint32_t imageTransferId = 0;
 uint32_t imageSize = 0;
 uint16_t imageChunkSize = 0;
@@ -235,11 +239,14 @@ bool handleImageChunk(const uint8_t *payload, uint8_t length) {
     if (valid) {
       LittleFS.remove(imageFinalPath);
       bool renamed = LittleFS.rename(IMAGE_PATH, imageFinalPath);
+      imageStatusCode = renamed ? 1 : 2;
       Serial.printf("[IMAGE] %s path=%s\n", renamed ? "COMPLETE sha256_ok=1" : "COMPLETE sha256_ok=1 STORAGE_RENAME_FAILED", renamed ? imageFinalPath : IMAGE_PATH);
     } else {
+      imageStatusCode = 2;
       Serial.printf("[IMAGE] CHECKSUM_FAILED sha256_ok=0 path=%s\n", IMAGE_PATH);
     }
     imageActive = false;
+    imageStatusPending = true;
   }
   return true;
 }
@@ -273,6 +280,20 @@ uint8_t buildAck(uint16_t sequence, uint8_t *out) {
   out[0] = MAGIC; out[1] = PROTOCOL_VERSION; out[2] = TYPE_ACK;
   out[3] = sequence >> 8; out[4] = sequence & 0xFF; out[5] = 0;
   uint16_t crc = crc16(out, 6); out[6] = crc >> 8; out[7] = crc & 0xFF; return 8;
+}
+
+uint8_t buildImageStatus(uint8_t *out) {
+  // Payload: marker, state (1=complete, 2=checksum/storage failure),
+  // transfer ID, total chunks, received chunks.
+  out[0] = MAGIC; out[1] = PROTOCOL_VERSION; out[2] = TYPE_STATUS;
+  out[3] = 0xFF; out[4] = 0xFF; out[5] = 10;
+  out[6] = IMAGE_STATUS; out[7] = imageStatusCode;
+  out[8] = imageTransferId >> 24; out[9] = imageTransferId >> 16;
+  out[10] = imageTransferId >> 8; out[11] = imageTransferId;
+  out[12] = imageTotalChunks >> 8; out[13] = imageTotalChunks;
+  out[14] = imageReceivedChunks >> 8; out[15] = imageReceivedChunks;
+  uint16_t crc = crc16(out, 16); out[16] = crc >> 8; out[17] = crc & 0xFF;
+  return 18;
 }
 
 void setup() {
@@ -352,6 +373,20 @@ void loop() {
     Serial.printf("[TX] ACK SENT seq=%u copies=%u\n", sequence, (ackFirst ? 1 : 0) + (ackSecond ? 1 : 0));
   } else {
     Serial.printf("[TX] ACK FAILED seq=%u\n", sequence);
+  }
+  if (imageStatusPending) {
+    uint8_t status[18];
+    uint8_t statusLength = buildImageStatus(status);
+    // Let the Pi finish consuming the final ACK before completion status.
+    delay(400);
+    if (transmit(status, statusLength)) {
+      Serial.printf("[IMAGE] STATUS SENT state=%u transfer=%08lX received=%u/%u\n",
+                    imageStatusCode, (unsigned long)imageTransferId,
+                    imageReceivedChunks, imageTotalChunks);
+    } else {
+      Serial.println("[IMAGE] STATUS SEND FAILED");
+    }
+    imageStatusPending = false;
   }
   startRX();
   setIdleLeds();

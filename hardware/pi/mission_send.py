@@ -22,9 +22,9 @@ try:
 except ModuleNotFoundError:  # Support importing as hardware.pi.mission_send.
     from .image_transfer_test import CHUNK_SIZE, MARKER, send_chunk
 try:
-    from packet import MAX_PAYLOAD
+    from packet import MAX_PAYLOAD, PacketError, TYPE_STATUS, parse
 except ModuleNotFoundError:  # Support importing as hardware.pi.mission_send.
-    from .packet import MAX_PAYLOAD
+    from .packet import MAX_PAYLOAD, PacketError, TYPE_STATUS, parse
 try:
     from radio import SX1278
 except ModuleNotFoundError:  # Support importing as hardware.pi.mission_send.
@@ -37,6 +37,7 @@ RULES = {
     "NOT_VISIBLE": ("discard", 3, 40),
 }
 MANIFEST_MARKER = 0xC0
+STATUS_MARKER = 0xC2
 
 
 def find_classifier(explicit):
@@ -93,6 +94,30 @@ def compact_metadata(value):
     if len(encoded) > MAX_PAYLOAD:
         raise ValueError(f"metadata is {len(encoded)} bytes; AeroLink limit is {MAX_PAYLOAD}")
     return encoded
+
+
+def wait_for_image_status(radio, transfer_id, timeout=4.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        incoming = radio.receive(timeout=0.2)
+        if incoming is None:
+            continue
+        try:
+            packet = parse(incoming[0])
+        except PacketError:
+            continue
+        payload = packet["payload"]
+        if packet["type"] != TYPE_STATUS or len(payload) != 10 or payload[0] != STATUS_MARKER:
+            continue
+        status_transfer = int.from_bytes(payload[2:6], "big")
+        total = int.from_bytes(payload[6:8], "big")
+        received = int.from_bytes(payload[8:10], "big")
+        if status_transfer != transfer_id:
+            continue
+        state = payload[1]
+        print(f"[IMAGE] STATUS state={state} transfer={status_transfer:08x} received={received}/{total}")
+        return state == 1 and received == total
+    return False
 
 
 def main():
@@ -167,6 +192,9 @@ def main():
                     print(f"[FAIL] image chunk {index + 1}/{total} was not acknowledged")
                     return 1
                 print(f"[IMAGE] delivered {index + 1}/{total}")
+            if not wait_for_image_status(radio, transfer_id):
+                print("[FAIL] IMAGE_COMPLETE status was not received")
+                return 1
         finally:
             radio.close()
         print(f"[MISSION] RESULT: metadata ACK plus {total}/{total} image chunks ACKed")
