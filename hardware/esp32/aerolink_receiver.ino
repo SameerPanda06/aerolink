@@ -296,7 +296,15 @@ void loop() {
   // downlink ACK is emitted. This is especially important for 217-byte image
   // packets, whose processing path is longer than the small link-test frames.
   uint8_t ack[8]; uint8_t ackLength = buildAck(sequence, ack); delay(200);
-  if (transmit(ack, ackLength)) Serial.printf("[TX] ACK SENT seq=%u\n", sequence);
-  else Serial.printf("[TX] ACK FAILED seq=%u\n", sequence);
+  // Repeat the ACK at the protocol layer. If one downlink frame is lost, the
+  // Pi can still advance without retransmitting the image data unnecessarily.
+  bool ackFirst = transmit(ack, ackLength);
+  delay(40);
+  bool ackSecond = transmit(ack, ackLength);
+  if (ackFirst || ackSecond) {
+    Serial.printf("[TX] ACK SENT seq=%u copies=%u\n", sequence, (ackFirst ? 1 : 0) + (ackSecond ? 1 : 0));
+  } else {
+    Serial.printf("[TX] ACK FAILED seq=%u\n", sequence);
+  }
   startRX();
 }
