@@ -6,18 +6,25 @@
     <meta name="theme-color" content="#f5f3ed" />
     <title>AeroLink · Ground station</title>
     <link rel="stylesheet" href="/assets/style.css" />
+    <link rel="stylesheet" href="/assets/experience.css" />
     <script defer src="/assets/app.js"></script>
+    <script defer src="/assets/experience.js"></script>
   </head>
   <body>
     <aside class="sidebar">
       <a class="brand" href="/" aria-label="AeroLink home"
-        ><span class="brand-icon">↗</span> aero<span>link</span></a
+        ><span class="brand-icon"
+          ><svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 18 18 5M6 5h12v12" /></svg
+        ></span>
+        aero<span>link</span></a
       >
       <div class="workspace">GROUND SYSTEMS <span>01</span></div>
       <nav aria-label="Dashboard sections">
         <a class="active" href="#overview">◫ <span>Mission overview</span></a
         ><a href="#transfers">⇄ <span>Transfer ledger</span></a
         ><a href="#instruments">⌁ <span>Instruments</span></a
+        ><a href="#classification">◇ <span>Science reports</span></a
         ><a href="#activity">≡ <span>Event stream</span></a>
       </nav>
       <div class="sidebar-note">
@@ -56,25 +63,158 @@
         <div class="breadcrumb">AEROLINK <span>/</span> OPERATIONS</div>
         <div class="header-actions">
           <span id="connection" role="status">Connecting to API…</span
+          ><button id="motion-toggle" class="quiet" aria-pressed="false">
+            Pause motion</button
           ><button id="demo" class="quiet">Explore demo</button>
         </div>
       </header>
       <div id="notice" class="notice" hidden></div>
       <section class="intro">
-        <div>
+        <div class="intro-copy">
           <div class="eyebrow">GROUND STATION · 433 MHz</div>
           <h1>A clearer view<br />of the mission<span>.</span></h1>
           <p>Follow the downlink. Verify the image. Read the instrument.</p>
-        </div>
-        <div class="session-card">
-          <span class="tiny-label">DATA SOURCE</span
-          ><strong id="source">Hardware events</strong
-          ><span id="freshness">Waiting for first contact</span>
-          <div class="signal-bars" aria-hidden="true">
-            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i
-            ><i></i><i></i><i></i>
+          <div class="hero-actions">
+            <a class="hero-primary" href="#transfers"
+              >Inspect the downlink <span aria-hidden="true">→</span></a
+            ><a class="hero-secondary" href="#instruments"
+              >Open instruments <span aria-hidden="true">↗</span></a
+            >
           </div>
-          <small>Event freshness is not a radio heartbeat.</small>
+          <div class="hero-caption">
+            <span class="coordinate-mark" aria-hidden="true">+</span
+            ><span>ONE LINK. EVERY CHUNK ACCOUNTED FOR.</span>
+          </div>
+        </div>
+        <div class="mission-visual">
+          <div class="visual-head">
+            <span>THE DOWNLINK</span
+            ><span class="visual-label">SYSTEM SCHEMATIC</span>
+          </div>
+          <svg
+            class="orbit-scene"
+            viewBox="0 0 540 300"
+            role="img"
+            aria-label="Illustrated path from a Raspberry Pi LoRa transmitter to the ESP32 ground receiver"
+          >
+            <defs>
+              <pattern
+                id="scene-grid"
+                width="26"
+                height="26"
+                patternUnits="userSpaceOnUse"
+              >
+                <path
+                  d="M26 0H0V26"
+                  fill="none"
+                  stroke="#ffffff"
+                  stroke-opacity=".065"
+                />
+              </pattern>
+              <radialGradient id="earth-glow">
+                <stop stop-color="#66887a" />
+                <stop offset="1" stop-color="#1d3634" />
+              </radialGradient>
+              <linearGradient id="beam-gradient" x1="0" x2="1">
+                <stop stop-color="#e28b59" />
+                <stop offset="1" stop-color="#c4d6a6" />
+              </linearGradient>
+              <clipPath id="planet-mask">
+                <circle cx="320" cy="340" r="196" />
+              </clipPath>
+            </defs>
+            <rect width="540" height="300" fill="url(#scene-grid)" />
+            <path class="orbit-outline" d="M37 241C105 41 375 18 510 163" />
+            <path
+              class="orbit-outline orbit-inner"
+              d="M83 254C154 85 366 66 469 191"
+            />
+            <circle
+              cx="320"
+              cy="340"
+              r="203"
+              fill="none"
+              stroke="#9fbcaa"
+              stroke-opacity=".18"
+            />
+            <circle cx="320" cy="340" r="196" fill="url(#earth-glow)" />
+            <g
+              clip-path="url(#planet-mask)"
+              fill="none"
+              stroke="#9ab7a1"
+              stroke-opacity=".2"
+            >
+              <ellipse cx="320" cy="340" rx="90" ry="196" />
+              <ellipse cx="320" cy="340" rx="160" ry="196" />
+              <path
+                d="M120 230Q320 302 520 230M112 272Q320 330 528 272M118 314Q320 350 522 314"
+              />
+              <path
+                d="m197 191 27 18 8 25 38 4 15 19 35-8 28 24 18-16 25 10 18-28 28-6"
+                stroke-opacity=".45"
+              />
+            </g>
+            <path class="beam" d="M140 107Q225 114 331 176" />
+            <path class="beam-travel" d="M140 107Q225 114 331 176" />
+            <g class="spacecraft" transform="translate(128 88) rotate(-24)">
+              <rect
+                x="-42"
+                y="5"
+                width="31"
+                height="29"
+                rx="2"
+                fill="#315352"
+                stroke="#90ac95"
+              />
+              <path
+                d="M-32 6v27M-22 6v27M-42 15h31M-42 24h31"
+                stroke="#90ac95"
+                stroke-opacity=".6"
+              />
+              <rect
+                x="24"
+                y="5"
+                width="31"
+                height="29"
+                rx="2"
+                fill="#315352"
+                stroke="#90ac95"
+              />
+              <path
+                d="M34 6v27M44 6v27M24 15h31M24 24h31"
+                stroke="#90ac95"
+                stroke-opacity=".6"
+              />
+              <rect x="-10" width="34" height="38" rx="5" fill="#d5dac5" />
+              <path d="M-4 7h22v23H-4z" fill="#bfc5ad" />
+              <path
+                d="M7 0v-12m-8 0h16M24 20h7"
+                stroke="#e4e3cf"
+                stroke-width="2"
+              />
+            </g>
+            <g class="ground-station">
+              <circle class="ground-halo" cx="331" cy="176" r="15" />
+              <circle cx="331" cy="176" r="5" fill="#eaa16e" />
+              <path d="M330 182v16m-7 0h16" stroke="#eaa16e" stroke-width="2" />
+            </g>
+            <g class="scene-text">
+              <text x="39" y="52">01 / TRANSMITTER</text>
+              <text class="scene-name" x="39" y="71">RASPBERRY PI</text>
+              <path d="M120 64v15" />
+              <text x="369" y="120">02 / RECEIVER</text>
+              <text class="scene-name" x="369" y="139">ESP32</text>
+              <path d="M362 145 342 166" />
+              <text x="39" y="278">433 MHz · LoRa</text>
+              <text x="386" y="278">AEROLINK / 01</text>
+            </g>
+          </svg>
+          <div class="session-card">
+            <span class="tiny-label">DATA SOURCE</span
+            ><strong id="source">Hardware events</strong
+            ><span id="freshness">Waiting for first contact</span>
+            <small>Event freshness is not a radio heartbeat.</small>
+          </div>
         </div>
       </section>
       <section class="stats" aria-label="Mission statistics">
@@ -129,8 +269,45 @@
               A verified record confirms storage on the ESP32. Image bytes are
               not yet exported to this server.
             </p>
+            <div class="transfer-stages" aria-label="Transfer stages">
+              <div id="stage-manifest">
+                <span>01</span><strong>Manifest</strong
+                ><small>Image described</small>
+              </div>
+              <div id="stage-chunks">
+                <span>02</span><strong>Chunks</strong
+                ><small>Bytes received</small>
+              </div>
+              <div id="stage-checksum">
+                <span>03</span><strong>Integrity</strong
+                ><small>Receiver SHA-256</small>
+              </div>
+            </div>
           </div>
           <div class="packet-panel">
+            <div class="integrity-orbit">
+              <svg
+                viewBox="0 0 100 100"
+                role="img"
+                aria-label="Selected transfer progress"
+              >
+                <circle class="ring-base" cx="50" cy="50" r="42" />
+                <circle
+                  id="transfer-ring"
+                  class="ring-value"
+                  cx="50"
+                  cy="50"
+                  r="42"
+                  pathLength="100"
+                  stroke-dasharray="0 100"
+                />
+                <path d="M39 51l8 8 17-20" class="ring-check" />
+              </svg>
+              <div>
+                <strong id="transfer-percent">—</strong
+                ><span id="transfer-phase">AWAITING TRANSFER</span>
+              </div>
+            </div>
             <span class="tiny-label" id="packet-title"
               >PACKET MAP / WAITING</span
             >
@@ -173,7 +350,22 @@
           >
             <path class="gridline" d="M0 35H600 M0 72H600 M0 110H600" />
             <g id="chart-lines"></g>
+            <line id="chart-marker" x1="600" x2="600" y1="0" y2="145" />
           </svg>
+          <div class="chart-scrubber">
+            <label for="sample-position">Inspect sample</label
+            ><input
+              id="sample-position"
+              type="range"
+              min="0"
+              max="0"
+              value="0"
+              aria-label="Inspect a telemetry sample"
+              disabled
+            /><output id="sample-detail" for="sample-position"
+              >No readings yet</output
+            >
+          </div>
           <div id="axis-values" class="axis-values"></div>
           <p id="imu-empty" class="empty">
             Waiting for MPU6050 samples. No simulated readings in live mode.
@@ -224,8 +416,40 @@
             <span class="eyebrow">03 / SCIENCE</span>
             <h2>Classification results</h2>
           </div>
-          <span class="tag">Real model output</span>
+          <span id="science-source" class="tag">Real model output</span>
         </div>
+        <div class="science-summary">
+          <article>
+            <span>CLEAR</span><strong id="science-clear">0</strong
+            ><progress
+              id="clear-share"
+              max="100"
+              value="0"
+              aria-label="Clear share of recent reports"
+            ></progress>
+          </article>
+          <article>
+            <span>CLOUDY</span><strong id="science-cloudy">0</strong
+            ><progress
+              id="cloudy-share"
+              max="100"
+              value="0"
+              aria-label="Cloudy share of recent reports"
+            ></progress>
+          </article>
+          <article>
+            <span>NOT VISIBLE</span><strong id="science-not-visible">0</strong
+            ><progress
+              id="not-visible-share"
+              max="100"
+              value="0"
+              aria-label="Not visible share of recent reports"
+            ></progress>
+          </article>
+        </div>
+        <p class="footnote science-window">
+          Distribution of the latest 20 reports
+        </p>
         <div class="table-wrap">
           <table>
             <thead>

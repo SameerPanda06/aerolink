@@ -3,6 +3,7 @@
 Set CHROMIUM_PATH to use a system Chromium, or install Playwright's browser.
 """
 import os
+import re
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -26,11 +27,33 @@ with sync_playwright() as playwright:
     assert page.locator('#notice').is_visible()
     assert page.locator('.packet.received').count() == 156
     assert page.locator('#calibrate').is_disabled()
+    expect(page.locator('#transfer-percent')).to_have_text('100%')
+    expect(page.locator('#transfer-phase')).to_have_text('CHECKSUM VERIFIED')
+    expect(page.locator('#science-clear')).to_have_text('1')
+    assert page.locator('#sample-position').is_enabled()
+    page.locator('#sample-position').fill('0')
+    expect(page.locator('#sample-detail')).to_contain_text('Sample 1/70')
+    page.get_by_role('button', name='Pause motion').click()
+    assert page.locator('#motion-toggle').get_attribute('aria-pressed') == 'true'
+    assert page.locator('.beam-travel').evaluate("el => getComputedStyle(el).animationPlayState") == 'paused'
+    page.get_by_role('button', name='Resume motion').click()
+    page.locator('nav a[href="#classification"]').click()
+    expect(page.locator('nav a[href="#classification"]')).to_have_class('active')
+    for panel in page.locator('.panel').all():
+        panel.scroll_into_view_if_needed()
+        expect(panel).to_have_class(re.compile('.*is-visible.*'))
+    page.locator('.intro').scroll_into_view_if_needed()
     assert page.request.get('http://127.0.0.1:8000/api/dashboard').json()['event_count'] == baseline
-    page.screenshot(path='/tmp/aerolink-desktop.png', full_page=True)
+    page.screenshot(path='/tmp/aerolink-desktop.png', full_page=True, animations='disabled')
     page.set_viewport_size({'width': 390, 'height': 844})
     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
-    page.screenshot(path='/tmp/aerolink-mobile.png', full_page=True)
+    for width in (320, 768, 1024):
+        page.set_viewport_size({'width': width, 'height': 900})
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), f'Overflow at {width}px'
+    page.set_viewport_size({'width': 390, 'height': 844})
+    page.locator('#activity').scroll_into_view_if_needed()
+    page.locator('.intro').scroll_into_view_if_needed()
+    page.screenshot(path='/tmp/aerolink-mobile.png', full_page=True, animations='disabled')
     page.get_by_role('button', name='Return to live').click()
     expect(page.locator('#connection')).to_contain_text('API connected')
     assert page.locator('#event-count').inner_text() == str(baseline)
@@ -48,7 +71,13 @@ with sync_playwright() as playwright:
     expect(page.locator('#classification-rows')).to_contain_text('41.5%')
     expect(page.locator('#classification-rows')).to_contain_text('Unlinked · Pi HTTP')
     assert page.locator('#classification-rows b').count() == 0
+    expect(page.locator('#science-cloudy')).to_have_text('1')
     page.unroute('**/api/dashboard')
+    page.emulate_media(reduced_motion='reduce')
+    expect(page.locator('#motion-toggle')).to_have_text('Motion reduced')
+    assert page.locator('#motion-toggle').is_disabled()
+    assert page.locator('.beam-travel').evaluate("el => getComputedStyle(el).animationName") == 'none'
+    assert page.locator('#transfers').evaluate("el => getComputedStyle(el).opacity") == '1'
     assert not errors, errors
     browser.close()
-    print('Browser smoke: demo isolation, 156 chunks, mobile layout, offline/reconnect, safe classification rendering: PASS')
+    print('Browser smoke: data integrity, responsive visuals, pause/reduced motion, chart inspection, navigation and reconnect: PASS')

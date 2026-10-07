@@ -48,14 +48,38 @@ function demoData() {
         },
         { type: "receiver_ready", ingested_at: stamp },
       ],
+      classifications: [
+        {
+          image_id: "IMG-DEMO-01",
+          classification: "CLEAR",
+          confidence: 0.972,
+          recommended_action: "keep",
+          transfer_id: "DE001001",
+          source: "demo",
+        },
+        {
+          image_id: "IMG-DEMO-02",
+          classification: "CLOUDY",
+          confidence: 0.813,
+          recommended_action: "defer",
+          source: "demo",
+        },
+        {
+          image_id: "IMG-DEMO-03",
+          classification: "NOT_VISIBLE",
+          confidence: 0.941,
+          recommended_action: "discard",
+          source: "demo",
+        },
+      ],
     },
     telemetry: {
       calibration: null,
       samples: Array.from({ length: 70 }, (_, i) => ({
         raw: {
-          accel_x_g: 0.02 + Math.sin(i / 4) * 0.015,
-          accel_y_g: -0.01 + Math.cos(i / 5) * 0.01,
-          accel_z_g: 1.01 + Math.sin(i / 8) * 0.02,
+          accel_x_g: 0.02 + Math.sin(i / 8) * 0.32,
+          accel_y_g: -0.01 + Math.cos(i / 7) * 0.16,
+          accel_z_g: 1.01 + Math.sin(i / 10) * 0.12,
           gyro_x_dps: 0.2,
           gyro_y_dps: -0.1,
           gyro_z_dps: 0.05,
@@ -93,6 +117,8 @@ function render() {
       selected = t.transfer_id;
       render();
     };
+    row.classList.toggle("is-selected", t.transfer_id === selected);
+    button.setAttribute("aria-pressed", String(t.transfer_id === selected));
     cell.append(button);
     row.append(cell);
     row.append(
@@ -155,12 +181,17 @@ function render() {
       node("td", report.recommended_action ?? "—"),
       node(
         "td",
-        `${report.transfer_id ?? "Unlinked"} · ${report.source === "pi_http" ? "Pi HTTP" : "LoRa"}`,
+        `${report.transfer_id ?? "Unlinked"} · ${report.source === "demo" ? "Demo" : report.source === "pi_http" ? "Pi HTTP" : "LoRa"}`,
       ),
     );
     $("classification-rows").append(row);
   }
   renderSensor();
+  document.dispatchEvent(
+    new CustomEvent("aerolink:update", {
+      detail: { dashboard: d, sensor, transfer, demo },
+    }),
+  );
 }
 function renderSensor() {
   const samples = sensor.samples,
