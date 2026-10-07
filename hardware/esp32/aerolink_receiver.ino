@@ -52,6 +52,7 @@
 #define IMAGE_MAX_CHUNKS 2048
 #define IMAGE_BITMAP_BYTES (IMAGE_MAX_CHUNKS / 8)
 #define IMAGE_PATH "/aerolink_image.part"
+#define IMAGE_DIR "/images"
 
 uint8_t readReg(uint8_t reg) {
   digitalWrite(NSS, LOW); SPI.transfer(reg & 0x7F);
@@ -81,6 +82,7 @@ uint16_t imageReceivedChunks = 0;
 uint8_t imageExpectedHash[32];
 uint8_t imageBitmap[IMAGE_BITMAP_BYTES];
 File imageFile;
+char imageFinalPath[48] = IMAGE_DIR "/unknown.jpg";
 
 bool imageBitSet(uint16_t index) {
   return (imageBitmap[index / 8] & (uint8_t)(1U << (index % 8))) != 0;
@@ -134,6 +136,8 @@ void resetImageState() {
   imageChunkSize = 0;
   imageTotalChunks = 0;
   imageReceivedChunks = 0;
+  strncpy(imageFinalPath, IMAGE_DIR "/unknown.jpg", sizeof(imageFinalPath));
+  imageFinalPath[sizeof(imageFinalPath) - 1] = '\0';
   memset(imageBitmap, 0, sizeof(imageBitmap));
 }
 
@@ -153,6 +157,7 @@ bool parseManifest(const uint8_t *payload, uint8_t length) {
   imageFile = LittleFS.open(IMAGE_PATH, "w");
   if (!imageFile) return false;
   imageTransferId = transfer;
+  snprintf(imageFinalPath, sizeof(imageFinalPath), IMAGE_DIR "/%08lX.jpg", (unsigned long)imageTransferId);
   imageSize = size;
   imageChunkSize = chunkSize;
   imageTotalChunks = total;
@@ -206,7 +211,13 @@ bool handleImageChunk(const uint8_t *payload, uint8_t length) {
   if (imageReceivedChunks == imageTotalChunks) {
     bool valid = verifyImageHash();
     imageFile.close();
-    Serial.printf("[IMAGE] %s path=%s\n", valid ? "COMPLETE sha256_ok=1" : "CHECKSUM_FAILED sha256_ok=0", IMAGE_PATH);
+    if (valid) {
+      LittleFS.remove(imageFinalPath);
+      bool renamed = LittleFS.rename(IMAGE_PATH, imageFinalPath);
+      Serial.printf("[IMAGE] %s path=%s\n", renamed ? "COMPLETE sha256_ok=1" : "COMPLETE sha256_ok=1 STORAGE_RENAME_FAILED", renamed ? imageFinalPath : IMAGE_PATH);
+    } else {
+      Serial.printf("[IMAGE] CHECKSUM_FAILED sha256_ok=0 path=%s\n", IMAGE_PATH);
+    }
     imageActive = false;
   }
   return true;
@@ -246,6 +257,7 @@ uint8_t buildAck(uint16_t sequence, uint8_t *out) {
 void setup() {
   Serial.begin(115200); pinMode(NSS, OUTPUT); digitalWrite(NSS, HIGH);
   if (!LittleFS.begin(true)) { Serial.println("[FS] LittleFS mount failed"); }
+  else if (!LittleFS.exists(IMAGE_DIR) && !LittleFS.mkdir(IMAGE_DIR)) { Serial.println("[FS] image directory create failed"); }
   pinMode(RST, OUTPUT); digitalWrite(RST, HIGH); pinMode(DIO0, INPUT);
   SPI.begin(SCK, MISO, MOSI, NSS); digitalWrite(RST, LOW); delay(100); digitalWrite(RST, HIGH); delay(100);
   Serial.println("AEROLINK CLEAN RECEIVER");
