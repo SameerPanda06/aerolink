@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#f5f3ed" />
+    <title>AeroLink · Ground station</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+    <script defer src="/assets/app.js"></script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="AeroLink home"
+        ><span class="brand-icon">↗</span> aero<span>link</span></a
+      >
+      <div class="workspace">GROUND SYSTEMS <span>01</span></div>
+      <nav aria-label="Dashboard sections">
+        <a class="active" href="#overview">◫ <span>Mission overview</span></a
+        ><a href="#transfers">⇄ <span>Transfer ledger</span></a
+        ><a href="#instruments">⌁ <span>Instruments</span></a
+        ><a href="#activity">≡ <span>Event stream</span></a>
+      </nav>
+      <div class="sidebar-note">
+        <span class="tiny-label">FIELD NOTE / 001</span>
+        <p>Every packet has<br />a place to land.</p>
+        <div class="mini-orbit" aria-hidden="true"><svg viewBox="0 0 160 140"><ellipse cx="80" cy="70" rx="66" ry="25"/><ellipse cx="80" cy="70" rx="66" ry="25" transform="rotate(60 80 70)"/><ellipse cx="80" cy="70" rx="66" ry="25" transform="rotate(120 80 70)"/><circle cx="80" cy="70" r="5"/></svg></div>
+        <small
+          >Raspberry Pi → LoRa → ESP32<br />Ground station / AeroLink</small
+        >
+      </div>
+      <div class="sidebar-foot">
+        <span class="dot"></span> SOFTWARE CONSOLE v1.0
+      </div>
+    </aside>
+    <main id="overview">
+      <header>
+        <div class="breadcrumb">AEROLINK <span>/</span> OPERATIONS</div>
+        <div class="header-actions">
+          <span id="connection" role="status">Connecting to API…</span
+          ><button id="demo" class="quiet">Explore demo</button>
+        </div>
+      </header>
+      <div id="notice" class="notice" hidden></div>
+      <section class="intro">
+        <div>
+          <div class="eyebrow">GROUND STATION · 433 MHz</div>
+          <h1>A clearer view<br />of the mission<span>.</span></h1>
+          <p>Follow the downlink. Verify the image. Read the instrument.</p>
+        </div>
+        <div class="session-card">
+          <span class="tiny-label">DATA SOURCE</span
+          ><strong id="source">Hardware events</strong
+          ><span id="freshness">Waiting for first contact</span>
+          <div class="signal-bars" aria-hidden="true">
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i
+            ><i></i><i></i><i></i>
+          </div>
+          <small>Event freshness is not a radio heartbeat.</small>
+        </div>
+      </section>
+      <section class="stats" aria-label="Mission statistics">
+        <article>
+          <span class="tiny-label">ACCEPTED EVENTS</span
+          ><strong id="event-count">0</strong
+          ><span>Persisted, replay-safe records</span>
+        </article>
+        <article>
+          <span class="tiny-label">VERIFIED TRANSFERS</span
+          ><strong id="verified-count">0</strong
+          ><span>Receiver-reported SHA-256 pass</span>
+        </article>
+        <article>
+          <span class="tiny-label">LATEST TRANSFER</span
+          ><strong id="progress-count">—</strong
+          ><span>Chunks reported at receiver</span>
+        </article>
+        <article>
+          <span class="tiny-label">SENSOR SAMPLES</span
+          ><strong id="sample-count">0</strong
+          ><span>Latest window · MPU6050</span>
+        </article>
+      </section>
+      <section id="transfers" class="panel transfer-panel">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">01 / DOWNLINK</span>
+            <h2>Transfer ledger</h2>
+          </div>
+          <span class="tag">200 B nominal chunks</span>
+        </div>
+        <div class="transfer-layout">
+          <div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>TRANSFER</th>
+                    <th>SIZE</th>
+                    <th>RECEIVED</th>
+                    <th>INTEGRITY</th>
+                  </tr>
+                </thead>
+                <tbody id="transfer-rows"></tbody>
+              </table>
+            </div>
+            <p id="transfer-empty" class="empty">
+              No transfers yet. Connect the host event bridge to begin.
+            </p>
+            <p class="footnote">
+              A verified record confirms storage on the ESP32. Image bytes are
+              not yet exported to this server.
+            </p>
+          </div>
+          <div class="packet-panel">
+            <span class="tiny-label" id="packet-title"
+              >PACKET MAP / WAITING</span
+            >
+            <div id="packet-map" class="packet-map"></div>
+            <div class="legend">
+              <span><i class="square received"></i> Observed</span
+              ><span><i class="square"></i> Unobserved</span>
+            </div>
+            <small id="packet-note"
+              >Select a transfer to inspect its events.</small
+            >
+          </div>
+        </div>
+      </section>
+      <section id="instruments" class="instrument-grid">
+        <article class="panel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">02 / INSTRUMENTS</span>
+              <h2>Motion & orientation</h2>
+            </div>
+            <span id="imu-source" class="tag">No samples</span>
+          </div>
+          <div class="sensor-toolbar">
+            <label for="device">Device</label
+            ><input id="device" value="AEROLINK-01" maxlength="64" /><label
+              class="toggle"
+              ><input id="corrected" type="checkbox" /> Corrected</label
+            >
+          </div>
+          <div class="chart-label">
+            <span>ACCELERATION · g</span
+            ><span class="axis-legend">X <b>Y</b> <em>Z</em></span>
+          </div>
+          <svg
+            id="imu-chart"
+            viewBox="0 0 600 145"
+            role="img"
+            aria-label="Recent accelerometer samples"
+          >
+            <path class="gridline" d="M0 35H600 M0 72H600 M0 110H600" />
+            <g id="chart-lines"></g>
+          </svg>
+          <div id="axis-values" class="axis-values"></div>
+          <p id="imu-empty" class="empty">
+            Waiting for MPU6050 samples. No simulated readings in live mode.
+          </p>
+          <p class="footnote">
+            Bias correction preserves gravity. These readings do not estimate
+            position or drift-free yaw.
+          </p>
+        </article>
+        <article class="panel calibration">
+          <span class="eyebrow">CALIBRATION BENCH</span>
+          <h2>Start from steady.</h2>
+          <p>
+            Hold the board still with one axis aligned to +1 g. Collect at least
+            50 fresh samples, then estimate sensor bias.
+          </p>
+          <label for="gravity">Axis reading +1 g at rest</label
+          ><select id="gravity">
+            <option value="+z">+Z</option>
+            <option value="-z">−Z</option>
+            <option value="+x">+X</option>
+            <option value="-x">−X</option>
+            <option value="+y">+Y</option>
+            <option value="-y">−Y</option></select
+          ><label for="api-token"
+            >Write token <span>(remote server only)</span></label
+          ><input
+            id="api-token"
+            type="password"
+            placeholder="Kept only in this page"
+            autocomplete="off"
+          /><button id="calibrate" class="primary">
+            Estimate stationary bias <span>↗</span>
+          </button>
+          <p id="calibration-status" role="status">No calibration saved.</p>
+        </article>
+      </section>
+      <section id="activity" class="panel">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">03 / ACTIVITY</span>
+            <h2>The latest from the field</h2>
+          </div>
+          <a class="quiet" href="/api/docs" id="api-docs">API reference ↗</a>
+        </div>
+        <div id="events" class="event-list"></div>
+      </section>
+      <footer>
+        <span>AEROLINK / GROUND SYSTEMS</span
+        ><span>Built for evidence. Ready for the next pass.</span>
+      </footer>
+    </main>
+  </body>
+</html>

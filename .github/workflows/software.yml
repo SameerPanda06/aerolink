@@ -1,0 +1,25 @@
+name: Ground software checks
+on: [push, pull_request]
+jobs:
+  software:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r backend/requirements.txt playwright==1.63.0
+      - run: python -m unittest discover -s tests -v
+      - run: node --check frontend/app.js
+      - run: python -m playwright install --with-deps chromium
+      - name: Browser integration
+        run: |
+          python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000 --no-proxy-headers &
+          for attempt in {1..20}; do
+            if curl -fsS http://127.0.0.1:8000/api/health; then break; fi
+            sleep 1
+          done
+          python tests/browser_smoke.py
