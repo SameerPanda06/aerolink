@@ -61,6 +61,7 @@
 #define IMAGE_MAX_CHUNKS 2048
 #define IMAGE_BITMAP_BYTES (IMAGE_MAX_CHUNKS / 8)
 #define IMAGE_PATH "/aerolink_image.part"
+#define IMAGE_META_PATH "/aerolink_image.meta"
 #define IMAGE_DIR "/images"
 
 uint8_t readReg(uint8_t reg) {
@@ -108,6 +109,64 @@ void setIdleLeds() {
 void setReceivingLeds() {
   setLed(RED_LED_PIN, false);
   setLed(BLUE_LED_PIN, true);
+}
+
+bool saveImageState() {
+  if (!imageActive) return false;
+  uint16_t bitmapBytes = (imageTotalChunks + 7) / 8;
+  uint8_t state[320];
+  uint16_t p = 0;
+  state[p++] = 0xA1; state[p++] = 0x01;
+  state[p++] = imageTransferId >> 24; state[p++] = imageTransferId >> 16;
+  state[p++] = imageTransferId >> 8; state[p++] = imageTransferId;
+  state[p++] = imageSize >> 24; state[p++] = imageSize >> 16;
+  state[p++] = imageSize >> 8; state[p++] = imageSize;
+  state[p++] = imageChunkSize >> 8; state[p++] = imageChunkSize;
+  state[p++] = imageTotalChunks >> 8; state[p++] = imageTotalChunks;
+  state[p++] = imageReceivedChunks >> 8; state[p++] = imageReceivedChunks;
+  memcpy(state + p, imageExpectedHash, 32); p += 32;
+  state[p++] = bitmapBytes;
+  memcpy(state + p, imageBitmap, bitmapBytes); p += bitmapBytes;
+  uint16_t crc = crc16(state, p);
+  state[p++] = crc >> 8; state[p++] = crc & 0xFF;
+  File meta = LittleFS.open(IMAGE_META_PATH, "w");
+  if (!meta) return false;
+  bool ok = meta.write(state, p) == p;
+  meta.flush(); meta.close();
+  return ok;
+}
+
+bool loadImageState() {
+  File meta = LittleFS.open(IMAGE_META_PATH, "r");
+  if (!meta) return false;
+  uint8_t state[320];
+  size_t length = meta.read(state, sizeof(state));
+  meta.close();
+  if (length < 52 || state[0] != 0xA1 || state[1] != 0x01) return false;
+  uint16_t bitmapBytes = state[48];
+  uint16_t expectedLength = 49 + bitmapBytes + 2;
+  if (bitmapBytes == 0 || bitmapBytes > IMAGE_BITMAP_BYTES || length != expectedLength) return false;
+  uint16_t receivedCrc = ((uint16_t)state[length - 2] << 8) | state[length - 1];
+  if (crc16(state, length - 2) != receivedCrc) return false;
+  imageTransferId = ((uint32_t)state[2] << 24) | ((uint32_t)state[3] << 16) |
+                    ((uint32_t)state[4] << 8) | state[5];
+  imageSize = ((uint32_t)state[6] << 24) | ((uint32_t)state[7] << 16) |
+              ((uint32_t)state[8] << 8) | state[9];
+  imageChunkSize = ((uint16_t)state[10] << 8) | state[11];
+  imageTotalChunks = ((uint16_t)state[12] << 8) | state[13];
+  imageReceivedChunks = ((uint16_t)state[14] << 8) | state[15];
+  if (imageTotalChunks == 0 || imageTotalChunks > IMAGE_MAX_CHUNKS || imageChunkSize == 0) return false;
+  memcpy(imageExpectedHash, state + 16, 32);
+  memset(imageBitmap, 0, sizeof(imageBitmap));
+  memcpy(imageBitmap, state + 49, bitmapBytes);
+  imageFile = LittleFS.open(IMAGE_PATH, "r+");
+  if (!imageFile) return false;
+  imageStatusCode = 0;
+  imageActive = true;
+  snprintf(imageFinalPath, sizeof(imageFinalPath), IMAGE_DIR "/%08lX.jpg", (unsigned long)imageTransferId);
+  Serial.printf("[IMAGE] RESUMED transfer=%08lX received=%u/%u\n",
+                (unsigned long)imageTransferId, imageReceivedChunks, imageTotalChunks);
+  return true;
 }
 
 bool imageBitSet(uint16_t index) {
@@ -178,19 +237,29 @@ bool parseManifest(const uint8_t *payload, uint8_t length) {
   if (size == 0 || chunkSize == 0 || chunkSize > 238 || total == 0 || total > IMAGE_MAX_CHUNKS) return false;
   uint16_t expectedTotal = (uint16_t)((size + chunkSize - 1) / chunkSize);
   if (total != expectedTotal) return false;
-  resetImageState();
-  LittleFS.remove(IMAGE_PATH);
-  imageFile = LittleFS.open(IMAGE_PATH, "w");
-  if (!imageFile) return false;
-  imageTransferId = transfer;
-  snprintf(imageFinalPath, sizeof(imageFinalPath), IMAGE_DIR "/%08lX.jpg", (unsigned long)imageTransferId);
-  imageSize = size;
-  imageChunkSize = chunkSize;
-  imageTotalChunks = total;
-  memcpy(imageExpectedHash, payload + 13, sizeof(imageExpectedHash));
-  imageStatusCode = 0;
-  memset(imageBitmap, 0, sizeof(imageBitmap));
-  imageActive = true;
+  bool resume = imageActive && imageTransferId == transfer && imageSize == size &&
+                imageChunkSize == chunkSize && imageTotalChunks == total &&
+                memcmp(imageExpectedHash, payload + 13, sizeof(imageExpectedHash)) == 0;
+  if (!resume) {
+    resetImageState();
+    LittleFS.remove(IMAGE_PATH);
+    LittleFS.remove(IMAGE_META_PATH);
+    imageFile = LittleFS.open(IMAGE_PATH, "w");
+    if (!imageFile) return false;
+    imageTransferId = transfer;
+    imageSize = size;
+    imageChunkSize = chunkSize;
+    imageTotalChunks = total;
+    memcpy(imageExpectedHash, payload + 13, sizeof(imageExpectedHash));
+    imageStatusCode = 0;
+    memset(imageBitmap, 0, sizeof(imageBitmap));
+    imageActive = true;
+    snprintf(imageFinalPath, sizeof(imageFinalPath), IMAGE_DIR "/%08lX.jpg", (unsigned long)imageTransferId);
+    saveImageState();
+    Serial.println("[IMAGE] NEW TRANSFER");
+  } else {
+    Serial.printf("[IMAGE] RESUME MANIFEST received=%u/%u\n", imageReceivedChunks, imageTotalChunks);
+  }
   Serial.printf("[IMAGE] MANIFEST transfer=%08lX bytes=%lu chunks=%u chunk_size=%u\n",
                 (unsigned long)imageTransferId, (unsigned long)imageSize,
                 imageTotalChunks, imageChunkSize);
@@ -232,6 +301,7 @@ bool handleImageChunk(const uint8_t *payload, uint8_t length) {
     }
     imageSetBit(index);
     imageReceivedChunks++;
+    saveImageState();
   }
   Serial.printf("[IMAGE] CHUNK %u/%u bytes=%u received=%u/%u\n",
                 index + 1, imageTotalChunks, bytes, imageReceivedChunks, imageTotalChunks);
@@ -241,6 +311,7 @@ bool handleImageChunk(const uint8_t *payload, uint8_t length) {
     if (valid) {
       LittleFS.remove(imageFinalPath);
       bool renamed = LittleFS.rename(IMAGE_PATH, imageFinalPath);
+      if (renamed) LittleFS.remove(IMAGE_META_PATH);
       imageStatusCode = renamed ? 1 : 2;
       Serial.printf("[IMAGE] %s path=%s\n", renamed ? "COMPLETE sha256_ok=1" : "COMPLETE sha256_ok=1 STORAGE_RENAME_FAILED", renamed ? imageFinalPath : IMAGE_PATH);
     } else {
@@ -309,6 +380,7 @@ void setup() {
   setIdleLeds();
   if (!LittleFS.begin(true)) { Serial.println("[FS] LittleFS mount failed"); }
   else if (!LittleFS.exists(IMAGE_DIR) && !LittleFS.mkdir(IMAGE_DIR)) { Serial.println("[FS] image directory create failed"); }
+  else loadImageState();
   pinMode(RST, OUTPUT); digitalWrite(RST, HIGH); pinMode(DIO0, INPUT);
   SPI.begin(SCK, MISO, MOSI, NSS); digitalWrite(RST, LOW); delay(100); digitalWrite(RST, HIGH); delay(100);
   Serial.println("AEROLINK CLEAN RECEIVER");
