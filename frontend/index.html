@@ -23,7 +23,26 @@
       <div class="sidebar-note">
         <span class="tiny-label">FIELD NOTE / 001</span>
         <p>Every packet has<br />a place to land.</p>
-        <div class="mini-orbit" aria-hidden="true"><svg viewBox="0 0 160 140"><ellipse cx="80" cy="70" rx="66" ry="25"/><ellipse cx="80" cy="70" rx="66" ry="25" transform="rotate(60 80 70)"/><ellipse cx="80" cy="70" rx="66" ry="25" transform="rotate(120 80 70)"/><circle cx="80" cy="70" r="5"/></svg></div>
+        <div class="mini-orbit" aria-hidden="true">
+          <svg viewBox="0 0 160 140">
+            <ellipse cx="80" cy="70" rx="66" ry="25" />
+            <ellipse
+              cx="80"
+              cy="70"
+              rx="66"
+              ry="25"
+              transform="rotate(60 80 70)"
+            />
+            <ellipse
+              cx="80"
+              cy="70"
+              rx="66"
+              ry="25"
+              transform="rotate(120 80 70)"
+            />
+            <circle cx="80" cy="70" r="5" />
+          </svg>
+        </div>
         <small
           >Raspberry Pi → LoRa → ESP32<br />Ground station / AeroLink</small
         >
@@ -190,7 +209,46 @@
             Estimate stationary bias <span>↗</span>
           </button>
           <p id="calibration-status" role="status">No calibration saved.</p>
+          <p id="capture-status" class="footnote">
+            Waiting for a fresh sensor capture.
+          </p>
+          <div id="bias-values" class="axis-values"></div>
+          <button id="reset-calibration" class="quiet">
+            Reset device calibration
+          </button>
         </article>
+      </section>
+      <section id="classification" class="panel">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">03 / SCIENCE</span>
+            <h2>Classification results</h2>
+          </div>
+          <span class="tag">Real model output</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>IMAGE</th>
+                <th>CLASS</th>
+                <th>CONFIDENCE</th>
+                <th>RECOMMENDATION</th>
+                <th>TRANSFER / SOURCE</th>
+              </tr>
+            </thead>
+            <tbody id="classification-rows"></tbody>
+          </table>
+        </div>
+        <p id="classification-empty" class="empty">
+          No classification reports yet. Run the Pi classification publisher to
+          import actual model results.
+        </p>
+        <p class="footnote">
+          Recommendations describe the software policy; they do not command the
+          Pi or change mission scheduling. HTTP reports are not proof of LoRa
+          metadata delivery.
+        </p>
       </section>
       <section id="activity" class="panel">
         <div class="panel-heading">

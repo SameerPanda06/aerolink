@@ -40,6 +40,15 @@ with sync_playwright() as playwright:
     page.unroute('**/api/dashboard')
     expect(page.locator('#connection')).to_contain_text('API connected')
     assert not page.locator('#notice').is_visible()
+    # A real API-shaped report must render as text, without treating metadata as HTML.
+    snapshot = page.request.get('http://127.0.0.1:8000/api/dashboard').json()
+    snapshot['classifications'] = [{'image_id':'<b>IMG-TEST</b>','classification':'CLOUDY',
+                                    'confidence':.4151,'recommended_action':'defer','source':'pi_http'}]
+    page.route('**/api/dashboard', lambda route: route.fulfill(json=snapshot))
+    expect(page.locator('#classification-rows')).to_contain_text('41.5%')
+    expect(page.locator('#classification-rows')).to_contain_text('Unlinked · Pi HTTP')
+    assert page.locator('#classification-rows b').count() == 0
+    page.unroute('**/api/dashboard')
     assert not errors, errors
     browser.close()
-    print('Browser smoke: demo isolation, 156 chunks, mobile layout, offline/reconnect, no JS errors: PASS')
+    print('Browser smoke: demo isolation, 156 chunks, mobile layout, offline/reconnect, safe classification rendering: PASS')

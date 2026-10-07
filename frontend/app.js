@@ -143,11 +143,47 @@ function render() {
     $("events").append(
       node("p", "Events will appear here as the host forwards them.", "empty"),
     );
+  $("classification-rows").replaceChildren();
+  const reports = d.classifications ?? [];
+  $("classification-empty").hidden = reports.length > 0;
+  for (const report of reports) {
+    const row = node("tr");
+    row.append(
+      node("td", report.image_id),
+      node("td", report.classification),
+      node("td", `${(report.confidence * 100).toFixed(1)}%`),
+      node("td", report.recommended_action ?? "—"),
+      node(
+        "td",
+        `${report.transfer_id ?? "Unlinked"} · ${report.source === "pi_http" ? "Pi HTTP" : "LoRa"}`,
+      ),
+    );
+    $("classification-rows").append(row);
+  }
   renderSensor();
 }
 function renderSensor() {
   const samples = sensor.samples,
     useCorrected = $("corrected").checked;
+  const window = sensor.calibration_window;
+  text(
+    "capture-status",
+    demo
+      ? "Demo samples cannot be calibrated."
+      : `${window?.fresh_samples ?? 0} fresh samples in latest capture / 50 required. Stationarity is checked when you calibrate.`,
+  );
+  $("reset-calibration").disabled = demo || !sensor.calibration;
+  $("bias-values").replaceChildren();
+  if (sensor.calibration) {
+    for (const [axis, offset] of Object.entries(sensor.calibration.offsets)) {
+      const item = node(
+        "div",
+        axis.replace("accel_", "A ").replace("gyro_", "G "),
+      );
+      item.append(node("strong", offset.toFixed(4)));
+      $("bias-values").append(item);
+    }
+  }
   $("imu-empty").hidden = samples.length > 0;
   text(
     "imu-source",
@@ -304,5 +340,26 @@ $("calibrate").onclick = async () => {
   }
 };
 $("api-docs").href = "/openapi.json";
+$("reset-calibration").onclick = async () => {
+  if (demo) return;
+  const device = $("device").value;
+  const headers = {};
+  if ($("api-token").value)
+    headers.Authorization = "Bearer " + $("api-token").value;
+  try {
+    const response = await fetch(
+      "/api/calibrations/" + encodeURIComponent(device),
+      { method: "DELETE", headers },
+    );
+    if (!response.ok) throw new Error("Reset failed; check the server token.");
+    $("corrected").checked = false;
+    text("calibration-status", "Calibration reset; raw samples are preserved.");
+    calibrationMessageUntil = Date.now() + 20000;
+    await refresh();
+  } catch (error) {
+    text("calibration-status", error.message);
+    calibrationMessageUntil = Date.now() + 20000;
+  }
+};
 refresh();
 setInterval(refresh, 2000);

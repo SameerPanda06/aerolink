@@ -1,5 +1,7 @@
 # AeroLink ground software
 
+For the next real-sensor and classification tests, follow [NEXT_TESTS.md](NEXT_TESTS.md). It includes LAN setup, capture isolation, bias reset and the real-classifier publisher.
+
 This adds a backend, responsive dashboard, durable host gateway and MPU6050 bias calibration. The hardware folder is unchanged. Python 3.10+ is required. No Node build is required: the frontend is served by the API, with no CDN or external font dependency.
 
 ## Run on Windows

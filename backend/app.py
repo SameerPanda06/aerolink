@@ -26,7 +26,7 @@ def now():
 class Event(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     event_id: str = Field(min_length=1, max_length=180)
-    type: Literal['receiver_ready', 'manifest', 'chunk', 'image_complete', 'telemetry']
+    type: Literal['receiver_ready', 'manifest', 'chunk', 'image_complete', 'telemetry', 'classification']
     transfer_id: str | None = Field(default=None, pattern=r'^[0-9a-fA-F]{8}$')
     received_at: datetime | None = None
     device: str = Field(default='AEROLINK-01', min_length=1, max_length=64)
@@ -44,6 +44,9 @@ class Event(BaseModel):
     imu: dict[str, float] | None = None
     classification: Literal['CLEAR', 'CLOUDY', 'NOT_VISIBLE', 'UNAVAILABLE'] | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
+    image_id: str | None = Field(default=None, min_length=1, max_length=128)
+    capture_id: str | None = Field(default=None, min_length=1, max_length=128)
+    recommended_action: Literal['keep', 'defer', 'discard'] | None = None
 
     @model_validator(mode='after')
     def validate_payload(self):
@@ -70,6 +73,8 @@ class Event(BaseModel):
                 raise ValueError('telemetry requires all six IMU axes')
             if any(abs(self.imu[k]) > (16 if i < 3 else 2000) for i, k in enumerate(AXES)):
                 raise ValueError('IMU sample exceeds MPU6050 range')
+        if self.type == 'classification' and (not self.image_id or self.classification in (None, 'UNAVAILABLE') or self.confidence is None):
+            raise ValueError('classification requires image_id, real label and confidence')
         return self
 
 
@@ -153,7 +158,7 @@ def create_app(db_path=None):
                 return {'accepted': True, 'duplicate': True}
             conn.execute('INSERT INTO events(event_id,type,device,ingested_at,payload) VALUES(?,?,?,?,?)',
                          (event.event_id, event.type, event.device, stamp, json.dumps(payload)))
-            if event.transfer_id:
+            if event.transfer_id and event.type in ('manifest', 'chunk', 'image_complete'):
                 conn.execute('INSERT OR IGNORE INTO transfers(transfer_id,updated_at) VALUES(?,?)', (event.transfer_id, stamp))
                 if event.type == 'manifest':
                     conn.execute('UPDATE transfers SET total=?, bytes=? WHERE transfer_id=?', (event.chunks, event.bytes, event.transfer_id))
@@ -183,8 +188,9 @@ def create_app(db_path=None):
             count = conn.execute('SELECT COUNT(*) FROM events').fetchone()[0]
             verified = conn.execute("SELECT COUNT(*) FROM transfers WHERE status='verified'").fetchone()[0]
             recent = [json.loads(r['payload']) | {'ingested_at': r['ingested_at']} for r in conn.execute('SELECT * FROM events ORDER BY seq DESC LIMIT 12')]
+            classifications = [json.loads(r['payload']) | {'ingested_at': r['ingested_at']} for r in conn.execute("SELECT * FROM events WHERE type='classification' ORDER BY seq DESC LIMIT 20")]
         return {'event_count': count, 'verified_count': verified, 'last_event_at': latest[0] if latest else None,
-                'transfers': transfers, 'recent_events': recent, 'image_download_available': False}
+                'transfers': transfers, 'recent_events': recent, 'classifications': classifications, 'image_download_available': False}
 
     @app.get('/api/telemetry')
     def telemetry(device: str = 'AEROLINK-01', limit: int = Query(default=100, ge=1, le=500)):
@@ -197,8 +203,13 @@ def create_app(db_path=None):
             event = json.loads(row['payload'])
             raw = event['imu']
             corrected = {key: raw[key] - profile['offsets'][key] for key in AXES} if profile else None
-            samples.append({'at': row['ingested_at'], 'raw': raw, 'corrected': corrected, 'source': event['source']})
-        return {'device': device, 'samples': samples, 'calibration': profile}
+            samples.append({'at': row['ingested_at'], 'recorded_at': event.get('received_at'),
+                            'capture_id': event.get('capture_id'), 'raw': raw, 'corrected': corrected, 'source': event['source']})
+        capture = samples[-1]['capture_id'] if samples else None
+        fresh = [s for s in samples if s['capture_id'] == capture and s['recorded_at'] and
+                 0 <= (datetime.now(timezone.utc) - datetime.fromisoformat(s['recorded_at'].replace('Z', '+00:00'))).total_seconds() <= 600]
+        return {'device': device, 'samples': samples, 'calibration': profile,
+                'calibration_window': {'capture_id': capture, 'fresh_samples': len(fresh), 'required': 50}}
 
     @app.post('/api/calibrations', dependencies=[Depends(authorize)])
     def calibrate(body: CalibrationRequest):
@@ -209,6 +220,9 @@ def create_app(db_path=None):
             if (datetime.now(timezone.utc) - datetime.fromisoformat(rows[-1]['ingested_at'])).total_seconds() > 600:
                 raise HTTPException(422, 'Sample window is stale; collect a fresh stationary window')
             samples = [json.loads(r['payload'])['imu'] for r in rows]
+            captures = {json.loads(r['payload']).get('capture_id') for r in rows}
+            if len(captures) != 1:
+                raise HTTPException(422, 'Latest capture has fewer than 50 samples; do not mix calibration runs')
             for row in rows:
                 recorded = json.loads(row['payload']).get('received_at')
                 if not recorded or not 0 <= (datetime.now(timezone.utc) - datetime.fromisoformat(recorded.replace('Z', '+00:00'))).total_seconds() <= 600:
@@ -217,6 +231,8 @@ def create_app(db_path=None):
             std = {k: statistics.pstdev(s[k] for s in samples) for k in AXES}
             if any(std[k] > (0.035 if i < 3 else 1.0) for i, k in enumerate(AXES)):
                 raise HTTPException(422, 'Sensor moved during sampling; hold stationary and retry')
+            if any(abs(means[k]) > 10 for k in AXES[3:]):
+                raise HTTPException(422, 'Gyroscope rate too high for stationary bias calibration')
             gravity = math.sqrt(sum(means[k] ** 2 for k in AXES[:3]))
             axis = AXES['xyz'.index(body.gravity_axis[1])]
             sign = 1 if body.gravity_axis[0] == '+' else -1
@@ -225,9 +241,15 @@ def create_app(db_path=None):
             offsets = dict(means)
             offsets[axis] -= sign  # Preserve gravity; never zero all three accelerometer axes.
             profile = {'device': body.device, 'created_at': now(), 'gravity_axis': body.gravity_axis,
-                       'samples': len(samples), 'offsets': offsets, 'stddev': std, 'method': 'stationary single-position bias'}
+                       'samples': len(samples), 'capture_id': next(iter(captures)), 'offsets': offsets, 'stddev': std, 'method': 'stationary single-position bias'}
             conn.execute('INSERT OR REPLACE INTO calibrations VALUES(?,?)', (body.device, json.dumps(profile)))
         return profile
+
+    @app.delete('/api/calibrations/{device}', dependencies=[Depends(authorize)])
+    def reset_calibration(device: str):
+        with db() as conn:
+            conn.execute('DELETE FROM calibrations WHERE device=?', (device,))
+        return {'reset': True, 'device': device}
 
     app.mount('/assets', StaticFiles(directory=ROOT / 'frontend'), name='assets')
 

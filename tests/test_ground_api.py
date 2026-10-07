@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend.app import AXES, create_app
 from tools.forward_events import collect, forward
+from tools.publish_classification import make_event, parse_result
 
 
 class GroundTests(unittest.TestCase):
@@ -81,6 +82,36 @@ class GroundTests(unittest.TestCase):
     def test_moving_calibration_rejected(self):
         self.samples(moving=True)
         self.assertEqual(self.client.post('/api/calibrations',json={'gravity_axis':'+z'}).status_code,422)
+
+    def test_capture_mixing_and_reset(self):
+        self.samples()
+        self.assertEqual(self.client.post('/api/calibrations',json={'gravity_axis':'+z'}).status_code,200)
+        self.assertEqual(self.client.delete('/api/calibrations/AEROLINK-01').status_code,200)
+        data=self.client.get('/api/telemetry').json()
+        self.assertIsNone(data['calibration'])
+        self.assertEqual(len(data['samples']),50)
+        self.assertEqual(data['calibration_window']['fresh_samples'],50)
+        self.post(dict(event_id='new-capture',type='telemetry',source='pi_http',capture_id='new',received_at=datetime.now(timezone.utc).isoformat(),imu=dict(zip(AXES,[0,0,1,0,0,0]))))
+        self.assertEqual(self.client.get('/api/telemetry').json()['calibration_window']['fresh_samples'],1)
+        self.assertEqual(self.client.post('/api/calibrations',json={'gravity_axis':'+z'}).status_code,422)
+
+    def test_classification_import_and_no_fake_transfer(self):
+        result=parse_result('[ML] model loaded\n{"class":"CLOUDY","confidence":0.4151,"probs":{"CLEAR":0.3}}\n')
+        event=make_event(result,'IMG-000004','AEROLINK-01')
+        self.assertEqual(self.post(event).status_code,200)
+        self.assertTrue(self.post(event).json()['duplicate'])
+        data=self.client.get('/api/dashboard').json()
+        self.assertEqual(data['classifications'][0]['confidence'],.4151)
+        self.assertEqual(data['classifications'][0]['recommended_action'],'defer')
+        self.assertEqual(data['transfers'],[])
+        linked=event | {'event_id':'linked-report','transfer_id':'554e3a0f'}
+        self.assertEqual(self.post(linked).status_code,200)
+        self.assertEqual(self.client.get('/api/dashboard').json()['transfers'],[])
+        self.assertEqual(make_event({'class':'NOT_VISIBLE','confidence':.4},'i','d')['recommended_action'],'defer')
+        self.assertEqual(make_event({'class':'NOT_VISIBLE','confidence':.9},'i','d')['recommended_action'],'discard')
+        with self.assertRaises(ValueError):
+            make_event({'class':'CLEAR','confidence':float('nan')},'i','d')
+        self.assertEqual(self.post({'event_id':'bad-class','type':'classification','image_id':'i'}).status_code,422)
 
     def test_stale_source_calibration_rejected(self):
         self.samples(stale=True)
