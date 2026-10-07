@@ -263,6 +263,9 @@ bool parseManifest(const uint8_t *payload, uint8_t length) {
   Serial.printf("[IMAGE] MANIFEST transfer=%08lX bytes=%lu chunks=%u chunk_size=%u\n",
                 (unsigned long)imageTransferId, (unsigned long)imageSize,
                 imageTotalChunks, imageChunkSize);
+  Serial.printf("EVENT {\"type\":\"manifest\",\"transfer_id\":\"%08lX\",\"bytes\":%lu,\"chunks\":%u,\"chunk_size\":%u}\n",
+                (unsigned long)imageTransferId, (unsigned long)imageSize,
+                imageTotalChunks, imageChunkSize);
   return true;
 }
 
@@ -305,6 +308,8 @@ bool handleImageChunk(const uint8_t *payload, uint8_t length) {
   }
   Serial.printf("[IMAGE] CHUNK %u/%u bytes=%u received=%u/%u\n",
                 index + 1, imageTotalChunks, bytes, imageReceivedChunks, imageTotalChunks);
+  Serial.printf("EVENT {\"type\":\"chunk\",\"transfer_id\":\"%08lX\",\"chunk\":%u,\"total\":%u,\"received\":%u}\n",
+                (unsigned long)imageTransferId, index + 1, imageTotalChunks, imageReceivedChunks);
   if (imageReceivedChunks == imageTotalChunks) {
     bool valid = verifyImageHash();
     imageFile.close();
@@ -314,9 +319,13 @@ bool handleImageChunk(const uint8_t *payload, uint8_t length) {
       if (renamed) LittleFS.remove(IMAGE_META_PATH);
       imageStatusCode = renamed ? 1 : 2;
       Serial.printf("[IMAGE] %s path=%s\n", renamed ? "COMPLETE sha256_ok=1" : "COMPLETE sha256_ok=1 STORAGE_RENAME_FAILED", renamed ? imageFinalPath : IMAGE_PATH);
+      Serial.printf("EVENT {\"type\":\"image_complete\",\"transfer_id\":\"%08lX\",\"path\":\"%s\",\"sha256_ok\":%s}\n",
+                    (unsigned long)imageTransferId, renamed ? imageFinalPath : IMAGE_PATH, renamed ? "true" : "false");
     } else {
       imageStatusCode = 2;
       Serial.printf("[IMAGE] CHECKSUM_FAILED sha256_ok=0 path=%s\n", IMAGE_PATH);
+      Serial.printf("EVENT {\"type\":\"image_complete\",\"transfer_id\":\"%08lX\",\"path\":\"%s\",\"sha256_ok\":false}\n",
+                    (unsigned long)imageTransferId, IMAGE_PATH);
     }
     imageActive = false;
     imageStatusPending = true;
@@ -389,6 +398,7 @@ void setup() {
   set433MHz(); writeReg(MODEM1, 0x72); writeReg(MODEM2, 0x74); writeReg(MODEM3, 0x04);
   writeReg(PREAMBLE_MSB, 0); writeReg(PREAMBLE_LSB, 8); writeReg(SYNC, 0x12); writeReg(TX_BASE, 0x80);
   Serial.println("[RADIO] 433MHz SF7 BW125 CR4/5 CRC ON SYNC=0x12"); startRX(); Serial.println("[RX] READY");
+  Serial.println("EVENT {\"type\":\"receiver_ready\",\"frequency_mhz\":433,\"spreading_factor\":7}");
 }
 
 void loop() {
