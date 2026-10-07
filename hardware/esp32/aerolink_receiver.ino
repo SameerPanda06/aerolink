@@ -57,6 +57,7 @@
 #define IMAGE_MANIFEST 0xC0
 #define IMAGE_CHUNK 0xC1
 #define IMAGE_STATUS 0xC2
+#define IMAGE_STATUS_REQUEST 0xC3
 #define IMAGE_MAX_CHUNKS 2048
 #define IMAGE_BITMAP_BYTES (IMAGE_MAX_CHUNKS / 8)
 #define IMAGE_PATH "/aerolink_image.part"
@@ -187,6 +188,7 @@ bool parseManifest(const uint8_t *payload, uint8_t length) {
   imageChunkSize = chunkSize;
   imageTotalChunks = total;
   memcpy(imageExpectedHash, payload + 13, sizeof(imageExpectedHash));
+  imageStatusCode = 0;
   memset(imageBitmap, 0, sizeof(imageBitmap));
   imageActive = true;
   Serial.printf("[IMAGE] MANIFEST transfer=%08lX bytes=%lu chunks=%u chunk_size=%u\n",
@@ -283,17 +285,21 @@ uint8_t buildAck(uint16_t sequence, uint8_t *out) {
 }
 
 uint8_t buildImageStatus(uint8_t *out) {
-  // Payload: marker, state (1=complete, 2=checksum/storage failure),
-  // transfer ID, total chunks, received chunks.
+  // Payload: marker, state (0=in progress, 1=complete, 2=failure),
+  // transfer ID, total chunks, received chunks, received bitmap.
   out[0] = MAGIC; out[1] = PROTOCOL_VERSION; out[2] = TYPE_STATUS;
-  out[3] = 0xFF; out[4] = 0xFF; out[5] = 10;
+  uint16_t bitmapBytes = (imageTotalChunks + 7) / 8;
+  uint8_t payloadLength = 10 + bitmapBytes;
+  out[3] = 0xFF; out[4] = 0xFF; out[5] = payloadLength;
   out[6] = IMAGE_STATUS; out[7] = imageStatusCode;
   out[8] = imageTransferId >> 24; out[9] = imageTransferId >> 16;
   out[10] = imageTransferId >> 8; out[11] = imageTransferId;
   out[12] = imageTotalChunks >> 8; out[13] = imageTotalChunks;
   out[14] = imageReceivedChunks >> 8; out[15] = imageReceivedChunks;
-  uint16_t crc = crc16(out, 16); out[16] = crc >> 8; out[17] = crc & 0xFF;
-  return 18;
+  memcpy(out + 16, imageBitmap, bitmapBytes);
+  uint16_t bodyLength = HEADER_SIZE + payloadLength;
+  uint16_t crc = crc16(out, bodyLength); out[bodyLength] = crc >> 8; out[bodyLength + 1] = crc & 0xFF;
+  return bodyLength + CRC_SIZE;
 }
 
 void setup() {
@@ -340,6 +346,13 @@ void loop() {
   }
   uint16_t sequence = ((uint16_t)packet[3] << 8) | packet[4];
   const uint8_t *payload = packet + HEADER_SIZE;
+  if (packet[2] == TYPE_STATUS && payloadLength == 1 && payload[0] == IMAGE_STATUS_REQUEST) {
+    uint8_t status[280];
+    uint8_t statusLength = buildImageStatus(status);
+    if (transmit(status, statusLength)) Serial.println("[IMAGE] STATUS RESPONSE SENT");
+    else Serial.println("[IMAGE] STATUS RESPONSE FAILED");
+    startRX(); setIdleLeds(); return;
+  }
   bool accepted = true;
   if (payloadLength == 45 && payload[0] == IMAGE_MANIFEST) {
     accepted = parseManifest(payload, payloadLength);

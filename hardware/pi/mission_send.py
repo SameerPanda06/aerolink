@@ -22,9 +22,9 @@ try:
 except ModuleNotFoundError:  # Support importing as hardware.pi.mission_send.
     from .image_transfer_test import CHUNK_SIZE, MARKER, send_chunk
 try:
-    from packet import MAX_PAYLOAD, PacketError, TYPE_STATUS, parse
+    from packet import MAX_PAYLOAD, PacketError, TYPE_STATUS, build, parse
 except ModuleNotFoundError:  # Support importing as hardware.pi.mission_send.
-    from .packet import MAX_PAYLOAD, PacketError, TYPE_STATUS, parse
+    from .packet import MAX_PAYLOAD, PacketError, TYPE_STATUS, build, parse
 try:
     from radio import SX1278
 except ModuleNotFoundError:  # Support importing as hardware.pi.mission_send.
@@ -38,6 +38,7 @@ RULES = {
 }
 MANIFEST_MARKER = 0xC0
 STATUS_MARKER = 0xC2
+STATUS_REQUEST_MARKER = 0xC3
 
 
 def find_classifier(explicit):
@@ -107,7 +108,7 @@ def wait_for_image_status(radio, transfer_id, timeout=4.0):
         except PacketError:
             continue
         payload = packet["payload"]
-        if packet["type"] != TYPE_STATUS or len(payload) != 10 or payload[0] != STATUS_MARKER:
+        if packet["type"] != TYPE_STATUS or len(payload) < 10 or payload[0] != STATUS_MARKER:
             continue
         status_transfer = int.from_bytes(payload[2:6], "big")
         total = int.from_bytes(payload[6:8], "big")
@@ -115,9 +116,28 @@ def wait_for_image_status(radio, transfer_id, timeout=4.0):
         if status_transfer != transfer_id:
             continue
         state = payload[1]
-        print(f"[IMAGE] STATUS state={state} transfer={status_transfer:08x} received={received}/{total}")
-        return state == 1 and received == total
+        bitmap = payload[10:]
+        missing = [index for index in range(total) if not (bitmap[index // 8] & (1 << (index % 8)))]
+        print(f"[IMAGE] STATUS state={state} transfer={status_transfer:08x} received={received}/{total} missing={len(missing)}")
+        return {"complete": state == 1 and received == total, "missing": missing, "total": total}
     return False
+
+
+def request_image_status(radio, transfer_id):
+    request = build(TYPE_STATUS, 0xFFFF, bytes([STATUS_REQUEST_MARKER]))
+    try:
+        radio.send(request)
+    except (TimeoutError, OSError) as error:
+        print(f"[IMAGE] status request TX error: {error}")
+        return None
+    return wait_for_image_status(radio, transfer_id)
+
+
+def image_chunk_payload(blob, transfer_id, index, total):
+    chunk = blob[index * CHUNK_SIZE : (index + 1) * CHUNK_SIZE]
+    envelope = bytes([MARKER]) + transfer_id.to_bytes(4, "big")
+    envelope += index.to_bytes(2, "big") + total.to_bytes(2, "big")
+    return envelope + chunk
 
 
 def main():
@@ -185,14 +205,20 @@ def main():
                 print("[FAIL] image manifest was not acknowledged")
                 return 1
             for index in range(total):
-                chunk = blob[index * CHUNK_SIZE : (index + 1) * CHUNK_SIZE]
-                envelope = bytes([MARKER]) + transfer_id.to_bytes(4, "big")
-                envelope += index.to_bytes(2, "big") + total.to_bytes(2, "big")
-                if not send_chunk(radio, index + 1, envelope + chunk):
-                    print(f"[FAIL] image chunk {index + 1}/{total} was not acknowledged")
-                    return 1
+                if not send_chunk(radio, index + 1, image_chunk_payload(blob, transfer_id, index, total)):
+                    print(f"[WARN] image chunk {index + 1}/{total} ACK missing; requesting receiver status")
+                    status = request_image_status(radio, transfer_id)
+                    if not status or not status["missing"]:
+                        print(f"[FAIL] image chunk {index + 1}/{total} could not be recovered")
+                        return 1
+                    print(f"[IMAGE] retransmitting {len(status['missing'])} missing chunks")
+                    for missing_index in status["missing"]:
+                        if not send_chunk(radio, missing_index + 1, image_chunk_payload(blob, transfer_id, missing_index, total)):
+                            print(f"[FAIL] missing chunk {missing_index + 1}/{total} was not acknowledged")
+                            return 1
                 print(f"[IMAGE] delivered {index + 1}/{total}")
-            if not wait_for_image_status(radio, transfer_id):
+            final_status = wait_for_image_status(radio, transfer_id)
+            if not final_status or not final_status["complete"]:
                 print("[FAIL] IMAGE_COMPLETE status was not received")
                 return 1
         finally:
