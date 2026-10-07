@@ -10,6 +10,12 @@
 #define MISO 19
 #define MOSI 23
 
+// Status LEDs. GPIO2 is the common ESP32 onboard blue LED. Change RED_LED_PIN
+// to match the external red LED wiring, or set it to -1 to disable red.
+#define BLUE_LED_PIN 2
+#define RED_LED_PIN 4
+#define LED_ACTIVE_HIGH true
+
 #define FIFO 0x00
 #define OP_MODE 0x01
 #define FRF_MSB 0x06
@@ -83,6 +89,21 @@ uint8_t imageExpectedHash[32];
 uint8_t imageBitmap[IMAGE_BITMAP_BYTES];
 File imageFile;
 char imageFinalPath[48] = IMAGE_DIR "/unknown.jpg";
+
+void setLed(int pin, bool on) {
+  if (pin < 0) return;
+  digitalWrite(pin, LED_ACTIVE_HIGH ? (on ? HIGH : LOW) : (on ? LOW : HIGH));
+}
+
+void setIdleLeds() {
+  setLed(BLUE_LED_PIN, false);
+  setLed(RED_LED_PIN, true);
+}
+
+void setReceivingLeds() {
+  setLed(RED_LED_PIN, false);
+  setLed(BLUE_LED_PIN, true);
+}
 
 bool imageBitSet(uint16_t index) {
   return (imageBitmap[index / 8] & (uint8_t)(1U << (index % 8))) != 0;
@@ -256,6 +277,9 @@ uint8_t buildAck(uint16_t sequence, uint8_t *out) {
 
 void setup() {
   Serial.begin(115200); pinMode(NSS, OUTPUT); digitalWrite(NSS, HIGH);
+  pinMode(BLUE_LED_PIN, OUTPUT);
+  if (RED_LED_PIN >= 0) pinMode(RED_LED_PIN, OUTPUT);
+  setIdleLeds();
   if (!LittleFS.begin(true)) { Serial.println("[FS] LittleFS mount failed"); }
   else if (!LittleFS.exists(IMAGE_DIR) && !LittleFS.mkdir(IMAGE_DIR)) { Serial.println("[FS] image directory create failed"); }
   pinMode(RST, OUTPUT); digitalWrite(RST, HIGH); pinMode(DIO0, INPUT);
@@ -270,18 +294,29 @@ void setup() {
 
 void loop() {
   uint8_t irq = readReg(IRQ);
-  if (irq & PHY_CRC_ERROR) { Serial.println("[RF] PHY CRC ERROR"); writeReg(IRQ, 0xFF); startRX(); return; }
+  if (irq & PHY_CRC_ERROR) {
+    setReceivingLeds();
+    Serial.println("[RF] PHY CRC ERROR");
+    writeReg(IRQ, 0xFF); startRX(); setIdleLeds(); return;
+  }
   if (!(irq & RX_DONE)) { delay(2); return; }
+  setReceivingLeds();
   uint8_t length = readReg(RX_BYTES); uint8_t current = readReg(RX_CURRENT); writeReg(FIFO_ADDR, current);
   uint8_t packet[255]; for (uint16_t i = 0; i < length; i++) packet[i] = readReg(FIFO);
   writeReg(IRQ, 0xFF); startRX();
   Serial.printf("[RX] RX_DONE length=%u RSSI=%d SNR=%.2f\n", length, (int)readReg(RSSI) - 157, (int8_t)readReg(SNR) / 4.0f);
-  if (length < 8 || packet[0] != MAGIC || packet[1] != PROTOCOL_VERSION) { Serial.println("[RX] INVALID HEADER"); return; }
+  if (length < 8 || packet[0] != MAGIC || packet[1] != PROTOCOL_VERSION) {
+    Serial.println("[RX] INVALID HEADER"); setIdleLeds(); return;
+  }
   uint8_t payloadLength = packet[5];
-  if (length != HEADER_SIZE + payloadLength + CRC_SIZE) { Serial.println("[RX] INVALID LENGTH"); return; }
+  if (length != HEADER_SIZE + payloadLength + CRC_SIZE) {
+    Serial.println("[RX] INVALID LENGTH"); setIdleLeds(); return;
+  }
   uint16_t received = ((uint16_t)packet[length - 2] << 8) | packet[length - 1];
   uint16_t calculated = crc16(packet, length - 2);
-  if (received != calculated) { Serial.println("[RX] APPLICATION CRC ERROR"); return; }
+  if (received != calculated) {
+    Serial.println("[RX] APPLICATION CRC ERROR"); setIdleLeds(); return;
+  }
   uint16_t sequence = ((uint16_t)packet[3] << 8) | packet[4];
   const uint8_t *payload = packet + HEADER_SIZE;
   bool accepted = true;
@@ -291,7 +326,7 @@ void loop() {
     accepted = handleImageChunk(payload, payloadLength);
   }
   if (!accepted) {
-    Serial.println("[IMAGE] REJECTED");
+    Serial.println("[IMAGE] REJECTED"); setIdleLeds();
     return;
   }
   if (payloadLength >= 9 && payload[0] == IMAGE_CHUNK) {
@@ -319,4 +354,5 @@ void loop() {
     Serial.printf("[TX] ACK FAILED seq=%u\n", sequence);
   }
   startRX();
+  setIdleLeds();
 }
