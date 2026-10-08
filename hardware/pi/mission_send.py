@@ -97,6 +97,27 @@ def compact_metadata(value):
     return encoded
 
 
+def decode_image_status(payload, transfer_id):
+    if len(payload) < 10 or payload[0] != STATUS_MARKER:
+        return None
+    state = payload[1]
+    status_transfer = int.from_bytes(payload[2:6], "big")
+    total = int.from_bytes(payload[6:8], "big")
+    received = int.from_bytes(payload[8:10], "big")
+    if status_transfer != transfer_id or state not in (0, 1, 2):
+        return None
+    if not 0 < total <= (MAX_PAYLOAD - 10) * 8 or received > total:
+        return None
+    bitmap = payload[10:]
+    if len(bitmap) != (total + 7) // 8:
+        return None
+    missing = [index for index in range(total) if not (bitmap[index // 8] & (1 << (index % 8)))]
+    if total - len(missing) != received or (state == 1 and received != total):
+        return None
+    return {"complete": state == 1, "failed": state == 2,
+            "missing": missing, "total": total, "received": received}
+
+
 def wait_for_image_status(radio, transfer_id, timeout=4.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -108,18 +129,13 @@ def wait_for_image_status(radio, transfer_id, timeout=4.0):
         except PacketError:
             continue
         payload = packet["payload"]
-        if packet["type"] != TYPE_STATUS or len(payload) < 10 or payload[0] != STATUS_MARKER:
+        if packet["type"] != TYPE_STATUS:
             continue
-        status_transfer = int.from_bytes(payload[2:6], "big")
-        total = int.from_bytes(payload[6:8], "big")
-        received = int.from_bytes(payload[8:10], "big")
-        if status_transfer != transfer_id:
+        status = decode_image_status(payload, transfer_id)
+        if not status:
             continue
-        state = payload[1]
-        bitmap = payload[10:]
-        missing = [index for index in range(total) if not (bitmap[index // 8] & (1 << (index % 8)))]
-        print(f"[IMAGE] STATUS state={state} transfer={status_transfer:08x} received={received}/{total} missing={len(missing)}")
-        return {"complete": state == 1 and received == total, "missing": missing, "total": total}
+        print(f"[IMAGE] STATUS state={payload[1]} transfer={transfer_id:08x} received={status['received']}/{status['total']} missing={len(status['missing'])}")
+        return status
     return False
 
 
@@ -204,26 +220,44 @@ def main():
             if not send_chunk(radio, 0, manifest_payload):
                 print("[FAIL] image manifest was not acknowledged")
                 return 1
+            completed_status = None
             for index in range(total):
                 if not send_chunk(radio, index + 1, image_chunk_payload(blob, transfer_id, index, total)):
                     print(f"[WARN] image chunk {index + 1}/{total} ACK missing; requesting receiver status")
                     status = request_image_status(radio, transfer_id)
-                    if not status or not status["missing"]:
+                    if not status or status["total"] != total or status.get("failed"):
                         print(f"[FAIL] image chunk {index + 1}/{total} could not be recovered")
                         return 1
-                    print(f"[IMAGE] retransmitting {len(status['missing'])} missing chunks")
-                    for missing_index in status["missing"]:
-                        if not send_chunk(radio, missing_index + 1, image_chunk_payload(blob, transfer_id, missing_index, total)):
-                            print(f"[FAIL] missing chunk {missing_index + 1}/{total} was not acknowledged")
-                            return 1
+                    if status["complete"]:
+                        completed_status = status
+                        print(f"[IMAGE] receiver verified {total}/{total}; lost ACK recovered by status")
+                        break
+                    # A receipt bitmap can confirm this fragment even when its ACK
+                    # was lost. Do not retransmit unsent future fragments here.
+                    if index in status["missing"]:
+                        print(f"[IMAGE] retransmitting missing chunk {index + 1}/{total}")
+                        if not send_chunk(radio, index + 1, image_chunk_payload(blob, transfer_id, index, total)):
+                            status = request_image_status(radio, transfer_id)
+                            if not status or status["total"] != total or status.get("failed") or index in status["missing"]:
+                                print(f"[FAIL] missing chunk {index + 1}/{total} could not be recovered")
+                                return 1
+                            if status["complete"]:
+                                completed_status = status
+                                print(f"[IMAGE] receiver verified {total}/{total}; lost ACK recovered by status")
+                                break
+                    print(f"[IMAGE] chunk {index + 1}/{total} receipt confirmed after ACK recovery")
                 print(f"[IMAGE] delivered {index + 1}/{total}")
-            final_status = wait_for_image_status(radio, transfer_id)
-            if not final_status or not final_status["complete"]:
+            # A status already consumed during recovery remains authoritative.
+            # If the unsolicited completion was lost, query it explicitly.
+            final_status = completed_status or wait_for_image_status(radio, transfer_id)
+            if not final_status or final_status["total"] != total or not final_status["complete"]:
+                final_status = request_image_status(radio, transfer_id)
+            if not final_status or final_status["total"] != total or not final_status["complete"]:
                 print("[FAIL] IMAGE_COMPLETE status was not received")
                 return 1
         finally:
             radio.close()
-        print(f"[MISSION] RESULT: metadata ACK plus {total}/{total} image chunks ACKed")
+        print(f"[MISSION] RESULT: metadata ACK plus {total}/{total} image chunks receiver-verified")
         print(f"[MISSION] compressed_sha256={digest}")
         return 0
     finally:

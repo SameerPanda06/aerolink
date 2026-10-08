@@ -54,7 +54,7 @@ Keep the spool. After backend/network failure, queued items retry automatically.
 
 ## 4. Run the existing Pi mission unchanged
 
-Start the Windows gateway **before** this transfer so it captures the new full-hash manifest. No Pi file changes are required:
+Start the Windows gateway **before** this transfer so it captures the new full-hash manifest. Copy the latest `hardware/pi/mission_send.py` from GitHub into your actual Pi runtime file `/home/sameer/aerolink/aerolink-main/pi/mission_send.py`. This fixes a false failure when status confirms completion after a lost final ACK; no other Pi file or radio timing change is needed.
 
 ```bash
 cd /home/sameer/aerolink/aerolink-main/pi
@@ -71,6 +71,8 @@ Wait for receiver `COMPLETE sha256_ok=1`, followed by:
 ```
 
 That ID is from the previous exact JPEG; a changed image/compression result can produce a different ID. The gateway may briefly report export deferred while the radio transfer is active. Successful export starts after the receiver is quiet and the final ACK/status exchange has finished.
+
+The corrected sender reports `[MISSION] RESULT: metadata ACK plus 156/156 image chunks receiver-verified`. If the final ACK is lost, a matching valid status with `state=1`, `received=156/156`, and `missing=0` is success, not failure. The sender retains this status instead of waiting for a second completion message. A missing unsolicited completion is explicitly queried. Wrong IDs/counts, truncated bitmaps, inconsistent received counts and receiver failure state are rejected. For an intermediate lost ACK, an observed fragment is accepted and only the current missing fragment is retried; future unsent fragments are sent in normal order. ACK timeout/retry/delay settings and the ESP32 sketch are unchanged by this sender correction.
 
 ## 5. Inspect the dashboard
 

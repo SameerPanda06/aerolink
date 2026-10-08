@@ -33,7 +33,7 @@ cd D:\N\aerolink
 
 The gateway reads the JSONL file, so it does not open COM3. Do not also enable `--post-url` on the serial bridge when using this gateway. Existing log records are replayed on first use. Keep the outbox database: it stores read offsets, queued events and rejected records. If you intentionally replace a log file, use a new filename and `--outbox` path; the gateway detects truncation but cannot reliably detect every same-size file replacement.
 
-Then run your existing Pi mission command. The ledger should receive manifest/chunk/completion events. An `image_complete` event with `sha256_ok=true` marks receiver verification even if the Pi's final-ACK handling incorrectly reports failure. That known sender bug remains in hardware pending a separate fix. Counts represent content transfer IDs, not distinct mission attempts: current firmware does not expose a session ID.
+Then run your Pi mission command. The ledger should receive manifest/chunk/completion events. An `image_complete` event with `sha256_ok=true` marks receiver verification. The corrected `hardware/pi/mission_send.py` also accepts a valid completion status when the final ACK is lost; copy it into your actual Pi runtime folder as described in RECEIVED_IMAGES.md. Counts represent content transfer IDs, not distinct mission attempts: current firmware does not expose a session ID.
 
 ## MPU6050 correction: separate test path
 
@@ -108,4 +108,4 @@ Deployment requires a hosting account and domain/URL. No public deployment is cr
 
 Run automated software checks with `python -m unittest discover -s tests -v`. For optional browser checks, install `playwright==1.63.0`, run `python -m playwright install chromium`, start the API on port 8000, then run `python tests/browser_smoke.py`. On Linux you can set `CHROMIUM_PATH=/usr/bin/chromium` to use installed Chromium. GitHub Actions runs both suites. These checks do not verify radios or MPU6050 hardware.
 
-Receiver JPEG export, server verification and recorded RSSI/SNR are now implemented; physical acceptance is described in [RECEIVED_IMAGES.md](RECEIVED_IMAGES.md). Still pending: structured ML/LoRa telemetry export, mission scheduling, session IDs and the Pi final-ACK fix. Existing records without radio samples remain labelled "Not recorded"; they cannot be retroactively measured.
+Receiver JPEG export, server verification, recorded RSSI/SNR and sender final-ACK status recovery are implemented; physical acceptance is described in [RECEIVED_IMAGES.md](RECEIVED_IMAGES.md). Still pending: structured ML/LoRa telemetry export, mission scheduling and session IDs. Existing records without radio samples remain labelled "Not recorded"; they cannot be retroactively measured.

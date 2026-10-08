@@ -99,4 +99,4 @@ Policy recommendations: CLEAR → keep; CLOUDY → defer; NOT_VISIBLE → discar
 
 ## Next boundary
 
-After both tests pass, the next milestone is receiver JPEG export and server-side image verification/display. That requires a small, separately tested ESP32/host addition; this batch deliberately makes no hardware edits. Public deployment also remains pending the hosting provider/server name and persistent storage configuration. The existing Pi final-ACK false-failure bug remains a separate hardware-folder fix.
+After both tests pass, follow RECEIVED_IMAGES.md for receiver JPEG export and server-side image verification/display. That milestone includes its own ESP32/host update and the corrected Pi final-ACK status recovery. Public deployment also remains pending the hosting provider/server name and persistent storage configuration.
