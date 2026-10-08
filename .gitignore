@@ -5,3 +5,5 @@ __pycache__/
 data/
 node_modules/
 test-results/
+external_images/
+dataset-venv/
