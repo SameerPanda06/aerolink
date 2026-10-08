@@ -32,6 +32,7 @@ def connect(path):
         CREATE TABLE IF NOT EXISTS rejected(payload TEXT, error TEXT);
         CREATE TABLE IF NOT EXISTS exports(transfer_id TEXT PRIMARY KEY,
             sha256 TEXT NOT NULL, bytes INTEGER NOT NULL, state TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS sessions(transfer_id TEXT PRIMARY KEY, session_id TEXT NOT NULL);
     ''')
     return conn
 
@@ -46,6 +47,44 @@ def event_id(event):
     if kind == 'manifest' and event.get('sha256'):
         return f'manifest:{identity}:{event["sha256"]}'
     return f'{kind}:{identity}'
+
+
+def metadata_event(line):
+    """Check USB integrity too, before spooling the receiver-verified document."""
+    parts = line.split()
+    if len(parts) != 4 or parts[0] != 'METADATA':
+        raise ValueError('Malformed metadata frame')
+    _, identity, digest, encoded = parts
+    if not re.fullmatch(r'[A-F0-9]{8}', identity) or not re.fullmatch(r'[a-f0-9]{64}', digest):
+        raise ValueError('Invalid metadata identity/hash')
+    if len(encoded) > 6000:
+        raise ValueError('Metadata document too large')
+    raw = bytes.fromhex(encoded)
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError('Metadata USB checksum mismatch')
+    document = json.loads(raw)
+    if not isinstance(document, dict) or document.get('transfer_id', '').upper() != identity:
+        raise ValueError('Metadata transfer mismatch')
+    return {'type': 'metadata', 'transfer_id': identity, 'metadata': document,
+            'event_id': f'metadata:{identity}:{digest}', 'session_id': digest, 'source': 'lora'}
+
+
+def attach_session(conn, event):
+    identity = event.get('transfer_id')
+    if not identity:
+        return event
+    if event['type'] == 'metadata':
+        row = conn.execute('SELECT session_id FROM sessions WHERE transfer_id=?', (identity,)).fetchone()
+        if not row or row[0] != event['session_id']:
+            with conn:
+                conn.execute('INSERT OR REPLACE INTO sessions VALUES(?,?)', (identity, event['session_id']))
+                conn.execute("UPDATE exports SET state='receiving' WHERE transfer_id=?", (identity,))
+    else:
+        row = conn.execute('SELECT session_id FROM sessions WHERE transfer_id=?', (identity,)).fetchone()
+        if row:
+            event['session_id'] = row[0]
+            event['event_id'] = event_id(event) + ':' + row[0]
+    return event
 
 
 class ExportReceiver:
@@ -212,16 +251,17 @@ def main():
                     line = line_buffer.decode('utf-8', errors='replace').strip()
                     line_buffer.clear()
                     if not export.consume(line):
-                        print(line, flush=True)
+                        print('[META] Received image details' if line.startswith('METADATA ') else line, flush=True)
                         if line.startswith('[RX]') or line.startswith('EVENT '):
                             last_radio = time.monotonic()
-                        if line.startswith('EVENT '):
+                        if line.startswith('EVENT ') or line.startswith('METADATA '):
                             try:
-                                event = json.loads(line[6:])
+                                event = metadata_event(line) if line.startswith('METADATA ') else json.loads(line[6:])
                                 if not isinstance(event, dict):
                                     raise ValueError('EVENT must be an object')
+                                attach_session(conn, event)
                                 export.remember(event)
-                                event['event_id'] = event_id(event)
+                                event.setdefault('event_id', event_id(event))
                                 event['received_at'] = datetime.now(timezone.utc).isoformat()
                                 log.write(json.dumps(event, separators=(',', ':')) + '\n')
                             except (ValueError, KeyError, TypeError) as error:

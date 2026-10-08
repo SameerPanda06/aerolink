@@ -16,6 +16,10 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+try:
+    from image_metadata import make_metadata, encode, send_metadata
+except ModuleNotFoundError:
+    from .image_metadata import make_metadata, encode, send_metadata
 
 try:
     from image_transfer_test import CHUNK_SIZE, MARKER, send_chunk
@@ -161,6 +165,7 @@ def main():
     parser.add_argument("image", type=Path)
     parser.add_argument("--image-id", default=None)
     parser.add_argument("--classifier", default=None)
+    parser.add_argument("--source-manifest", type=Path, help="Defaults to dataset_manifest.jsonl beside image")
     parser.add_argument("--keep-jpeg", action="store_true", help="do not delete temporary JPEG")
     args = parser.parse_args()
     if not args.image.is_file():
@@ -186,6 +191,8 @@ def main():
         digest = hashlib.sha256(blob).hexdigest()
         transfer_id = int(digest[:8], 16)
         total = (len(blob) + CHUNK_SIZE - 1) // CHUNK_SIZE
+        if total > 1896:
+            raise ValueError('Prepared JPEG exceeds receiver chunk capacity; resize the source before sending')
         metadata = {
             "image_id": image_id,
             "classification": label,
@@ -199,7 +206,11 @@ def main():
             "transfer_id": f"{transfer_id:08x}",
             "compression_ms": round(compression_ms, 1),
         }
-        metadata_payload = compact_metadata(metadata)
+        metadata = make_metadata(args.image, temp_path, classification, metadata, digest, args.source_manifest)
+        metadata_payload = encode(metadata)
+        sidecar = args.image.with_suffix('.metadata.json')
+        sidecar.write_bytes(metadata_payload)
+        print(f"[META] Saved sidecar {sidecar}")
         manifest_payload = (
             bytes([MANIFEST_MARKER])
             + transfer_id.to_bytes(4, "big")
@@ -214,7 +225,7 @@ def main():
         radio = SX1278()
         try:
             radio.initialize()
-            if not send_chunk(radio, 0, metadata_payload):
+            if not send_metadata(radio, metadata, send_chunk):
                 print("[FAIL] metadata was not acknowledged")
                 return 1
             if not send_chunk(radio, 0, manifest_payload):

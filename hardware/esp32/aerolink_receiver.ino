@@ -60,6 +60,8 @@
 #define IMAGE_CHUNK 0xC1
 #define IMAGE_STATUS 0xC2
 #define IMAGE_STATUS_REQUEST 0xC3
+#define IMAGE_METADATA 0xC4
+#define METADATA_LIMIT 3000
 #define IMAGE_MAX_CHUNKS 1896 // 10-byte status + 237-byte bitmap fits 247-byte payload.
 #define IMAGE_BITMAP_BYTES (IMAGE_MAX_CHUNKS / 8)
 #define IMAGE_PATH "/aerolink_image.part"
@@ -103,6 +105,79 @@ uint32_t exportOffset = 0;
 unsigned long lastRadioPacketAt = 0;
 char serialCommand[32];
 uint8_t serialCommandLength = 0;
+
+// Metadata uses the existing CRC/ACK transport, plus a full document hash.
+// One bounded document at a time; duplicate fragments are acknowledged only
+// when their bytes match. Final ACK means the whole document was verified.
+uint8_t metadataBuffer[METADATA_LIMIT];
+uint8_t metadataHash[32];
+uint32_t metadataTransfer = 0;
+uint16_t metadataSize = 0, metadataNext = 0, metadataTotal = 0;
+bool metadataPending = false;
+
+bool handleMetadata(const uint8_t *payload, uint8_t length) {
+  if (length <= 43) return false;
+  uint32_t transfer = ((uint32_t)payload[1] << 24) | ((uint32_t)payload[2] << 16) |
+                      ((uint32_t)payload[3] << 8) | payload[4];
+  uint16_t index = ((uint16_t)payload[5] << 8) | payload[6];
+  uint16_t total = ((uint16_t)payload[7] << 8) | payload[8];
+  uint16_t size = ((uint16_t)payload[9] << 8) | payload[10];
+  if (!size || size > METADATA_LIMIT || total != (size + 199) / 200 || index >= total) return false;
+  uint16_t offset = index * 200;
+  uint16_t bytes = size - offset < 200 ? size - offset : 200;
+  if (length != 43 + bytes) return false;
+  bool same = transfer == metadataTransfer && size == metadataSize &&
+              memcmp(metadataHash, payload + 11, 32) == 0;
+  if (!same) {
+    if (index != 0) return false;
+    metadataTransfer = transfer; metadataSize = size; metadataTotal = total;
+    metadataNext = 0; metadataPending = false;
+    memcpy(metadataHash, payload + 11, 32);
+  }
+  if (index > metadataNext) return false;
+  if (index < metadataNext) {
+    if (memcmp(metadataBuffer + offset, payload + 43, bytes) != 0) return false;
+    // Re-emit final document on a retry; host events are idempotent.
+    if (index + 1 == total) metadataPending = true;
+    return true;
+  }
+  memcpy(metadataBuffer + offset, payload + 43, bytes);
+  metadataNext++;
+  if (metadataNext == total) {
+    uint8_t calculated[32];
+    mbedtls_sha256_context context;
+    mbedtls_sha256_init(&context);
+    bool ok = mbedtls_sha256_starts(&context, 0) == 0 &&
+              mbedtls_sha256_update(&context, metadataBuffer, size) == 0 &&
+              mbedtls_sha256_finish(&context, calculated) == 0 &&
+              memcmp(calculated, metadataHash, 32) == 0;
+    mbedtls_sha256_free(&context);
+    if (!ok) { metadataNext = 0; return false; }
+    char path[56];
+    snprintf(path, sizeof(path), IMAGE_DIR "/%08lX.metadata.json", (unsigned long)transfer);
+    File details = LittleFS.open("/metadata.part", "w");
+    if (!details) { metadataNext = 0; return false; }
+    bool stored = details.write(metadataBuffer, size) == size;
+    details.flush(); details.close();
+    if (stored) {
+      LittleFS.remove(path);
+      stored = LittleFS.rename("/metadata.part", path);
+    }
+    if (!stored) { metadataNext = 0; return false; }
+    metadataPending = true;
+  }
+  return true;
+}
+
+void emitMetadata() {
+  if (!metadataPending) return;
+  Serial.printf("METADATA %08lX ", (unsigned long)metadataTransfer);
+  for (uint8_t i = 0; i < 32; i++) Serial.printf("%02x", metadataHash[i]);
+  Serial.print(' ');
+  for (uint16_t i = 0; i < metadataSize; i++) Serial.printf("%02x", metadataBuffer[i]);
+  Serial.println();
+  metadataPending = false;
+}
 
 // USB export is requested by the host only for a completed file. Each loop
 // emits at most 32 bytes (hex framed), and LoRa reception always takes priority.
@@ -503,7 +578,10 @@ void loop() {
     startRX(); setIdleLeds(); return;
   }
   bool accepted = true;
-  if (payloadLength == 45 && payload[0] == IMAGE_MANIFEST) {
+  if (packet[2] != TYPE_DATA) { setIdleLeds(); return; }
+  if (payloadLength > 0 && payload[0] == IMAGE_METADATA) {
+    accepted = handleMetadata(payload, payloadLength);
+  } else if (payloadLength == 45 && payload[0] == IMAGE_MANIFEST) {
     accepted = parseManifest(payload, payloadLength);
   } else if (payloadLength >= 9 && payload[0] == IMAGE_CHUNK) {
     accepted = handleImageChunk(payload, payloadLength);
@@ -552,6 +630,7 @@ void loop() {
   }
   startRX();
   setIdleLeds();
+  emitMetadata();
   // Measurements are separate events: retries must not conflict with deduped chunks.
   Serial.printf("EVENT {\"type\":\"rf_sample\",\"rssi_dbm\":%d,\"snr_db\":%.2f,\"packet_bytes\":%u,\"payload_bytes\":%u,\"sequence\":%u",
                 packetRssi, packetSnr, length, payloadLength, sequence);

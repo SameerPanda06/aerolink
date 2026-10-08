@@ -215,7 +215,7 @@ function render() {
       node("td", report.recommended_action ?? "—"),
       node(
         "td",
-        `${report.transfer_id ?? "Unlinked"} · ${report.source === "demo" ? "Demo" : report.source === "pi_http" ? "Pi HTTP" : "LoRa"}`,
+        `${report.transfer_id ?? "Unlinked"} · ${report.source === "demo" ? "Demo" : report.source === "pi_http" ? "Pi HTTP" : "LoRa"}${report.status ? ` · ${report.status}` : ''}`,
       ),
     );
     $("classification-rows").append(row);
@@ -235,6 +235,44 @@ function imageUrl(transfer) {
     : null;
 }
 function renderTransferDetails(transfer) {
+  const meta = transfer?.metadata, timing = transfer?.timing;
+  const urlThumb = imageUrl(transfer);
+  const thumbnail = $('selected-thumbnail');
+  thumbnail.hidden = !urlThumb;
+  $('thumbnail-placeholder').hidden = !!urlThumb;
+  if (urlThumb && thumbnail.getAttribute('src') !== urlThumb) thumbnail.src = urlThumb;
+  if (!urlThumb) thumbnail.removeAttribute('src');
+  text('thumbnail-placeholder', transfer?.status === 'failed' ? 'Image verification failed' : transfer?.status === 'verified' ? 'Verified · preparing preview' : transfer ? 'Receiving image' : 'Awaiting image');
+  text('selected-image-name', meta ? `${meta.mission_id} / ${meta.image_id}` : transfer?.transfer_id ?? 'Waiting for metadata');
+  text('selected-prediction', meta ? `${meta.classification} · ${(meta.confidence * 100).toFixed(1)}% confidence · ${meta.action}` : 'No classification metadata received for this transfer.');
+  const age = timing?.last_activity_at ? (Date.now() - Date.parse(timing.last_activity_at)) / 1000 : Infinity;
+  const active = !demo && transfer?.status === 'receiving' && age >= 0 && age < 8;
+  $('transfer-activity').classList.toggle('receiving-pulse', active);
+  text('transfer-activity', urlThumb ? 'Image available · independently verified' : transfer?.status === 'verified' ? 'Receiver verified · awaiting export' : transfer?.status === 'failed' ? 'Checksum failed' : active ? 'Receiving image chunks…' : transfer ? 'Waiting for further packets' : 'Waiting for transfer');
+  $('image-progress').value = transfer?.total ? Math.min(100, 100 * transfer.received / transfer.total) : 0;
+  $('stage-export').classList.toggle('is-done', !!urlThumb);
+  const facts = $('selected-facts');
+  facts.replaceChildren();
+  const elapsed = timing?.elapsed_seconds;
+  const rate = timing?.receiving_bytes_per_second;
+  const entries = [
+    ['Progress', transfer ? `${transfer.received} / ${transfer.total ?? '?'} chunks` : '—'],
+    ['Observed elapsed time', elapsed != null ? `${elapsed.toFixed(1)} s` : '—'],
+    ['Measured image receiving rate', rate != null ? `${rate.toFixed(1)} B/s` : '—'],
+    ['Captured at', meta?.captured_at ? new Date(meta.captured_at).toLocaleString() : 'Unknown'],
+    ['Image source', meta?.capture_source ?? 'Unknown'],
+    ['Geographic bounds (W, S, E, N)', meta?.bbox ? meta.bbox.map(v => v.toFixed(4)).join(', ') : 'Unknown'],
+    ['Compression', meta ? `JPEG quality ${meta.jpeg_quality} · ${meta.original_bytes.toLocaleString()} → ${meta.compressed_bytes.toLocaleString()} B` : 'Unknown'],
+    ['Dimensions (original → transmitted)', meta ? `${meta.original_dimensions.join(' × ')} → ${meta.transmitted_dimensions.join(' × ')}` : 'Unknown'],
+    ['Altitude', meta?.altitude_m_agl != null ? `${meta.altitude_m_agl} m (${meta.altitude_reference})` : 'Unknown'],
+    ['Scene cloud cover', meta?.cloud_cover_percent != null ? `${meta.cloud_cover_percent.toFixed(2)}% (catalog)` : 'Unknown'],
+  ];
+  for (const [label, value] of entries) {
+    const field = node('div'); field.append(node('dt', label), node('dd', value)); facts.append(field);
+  }
+  $('metadata-download').hidden = !meta || demo;
+  if (meta && !demo) $('metadata-download').href = `/api/transfers/${transfer.transfer_id}/metadata`;
+  else $('metadata-download').removeAttribute('href');
   const radio = transfer?.radio;
   text(
     "signal-label",
@@ -352,6 +390,23 @@ function renderSensor() {
       .map((s) => ($("corrected").checked ? s.corrected : s.raw))
       .filter(Boolean),
     last = values.at(-1);
+  const stamp = samples.at(-1)?.recorded_at;
+  const sampleAge = stamp ? (Date.now() - Date.parse(stamp)) / 1000 : Infinity;
+  const fresh = sampleAge >= 0 && sampleAge < 10;
+  text('telemetry-freshness', demo ? 'Demo telemetry' : !samples.length ? 'No samples · start Pi telemetry publisher' : fresh ? `Live · ${sampleAge.toFixed(1)} s old` : 'Stale · showing last recorded sample');
+  if (last) {
+    const {accel_x_g: x, accel_y_g: y, accel_z_g: z} = last;
+    const gravity = Math.hypot(x, y, z);
+    if (gravity > 0.8 && gravity < 1.2) {
+      const roll = Math.atan2(y, z) * 180 / Math.PI;
+      const pitch = Math.atan2(-x, Math.hypot(y, z)) * 180 / Math.PI;
+      $('attitude-board').setAttribute('transform', `translate(0 ${pitch / 4}) rotate(${roll} 120 60)`);
+      text('tilt-reading', `Roll ${roll.toFixed(1)}° · Pitch ${pitch.toFixed(1)}°`);
+    } else {
+      text('tilt-reading', 'Tilt unavailable · acceleration outside gravity range');
+      $('attitude-board').removeAttribute('transform');
+    }
+  } else { text('tilt-reading', 'Waiting for MPU6050'); $('attitude-board').removeAttribute('transform'); }
   $("chart-lines").replaceChildren();
   ["accel_x_g", "accel_y_g", "accel_z_g"].forEach((key, index) => {
     if (!values.length) return;
@@ -513,3 +568,15 @@ $("reset-calibration").onclick = async () => {
 };
 refresh();
 setInterval(refresh, 2000);
+
+function updateDoppler() {
+  const frequency = Number($('carrier-mhz').value), velocity = Number($('radial-velocity').value);
+  if (!$('carrier-mhz').value || !$('radial-velocity').value || !Number.isFinite(frequency) || frequency < 1 || frequency > 100000 || !Number.isFinite(velocity) || Math.abs(velocity) > 15000) {
+    text('doppler-result', 'Enter a carrier from 1–100000 MHz and velocity from −15000 to 15000 m/s.'); return;
+  }
+  const shift = -frequency * 1e6 * velocity / 299792458;
+  text('doppler-result', `Calculated shift: ${shift.toFixed(1)} Hz · Expected receive frequency: ${(frequency + shift / 1e6).toFixed(6)} MHz · Transmit precompensation: ${(-shift).toFixed(1)} Hz (first order)`);
+}
+$('carrier-mhz').oninput = updateDoppler;
+$('radial-velocity').oninput = updateDoppler;
+updateDoppler();

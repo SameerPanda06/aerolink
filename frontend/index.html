@@ -276,8 +276,8 @@
             </p>
             <div class="transfer-stages" aria-label="Transfer stages">
               <div id="stage-manifest">
-                <span>01</span><strong>Manifest</strong
-                ><small>Image described</small>
+                <span>01</span><strong>Metadata</strong
+                ><small>Image details received</small>
               </div>
               <div id="stage-chunks">
                 <span>02</span><strong>Chunks</strong
@@ -287,7 +287,21 @@
                 <span>03</span><strong>Integrity</strong
                 ><small>Receiver SHA-256</small>
               </div>
+              <div id="stage-export"><span>04</span><strong>Available</strong><small>Server SHA-256</small></div>
             </div>
+            <div class="selected-image-card">
+              <div class="selected-thumbnail"><img id="selected-thumbnail" alt="Selected received image" hidden /><p id="thumbnail-placeholder">Awaiting image</p></div>
+              <div class="selected-description">
+                <span class="eyebrow">SELECTED IMAGE</span>
+                <h3 id="selected-image-name">Waiting for metadata</h3>
+                <p id="selected-prediction">Classification arrives before the image chunks.</p>
+                <p id="transfer-activity" role="status">Waiting for transfer</p>
+                <progress id="image-progress" max="100" value="0" aria-label="Image receiving progress"></progress>
+              </div>
+            </div>
+            <dl id="selected-facts" class="radio-values"></dl>
+            <p class="footnote">Timing spans observed receiver events. Rate counts unique observed image bytes over that interval; retries do not inflate it. A late gateway connection can leave measurements incomplete.</p>
+            <a id="metadata-download" hidden>Download image metadata ↓</a>
           </div>
           <div class="packet-panel">
             <div class="integrity-orbit">
@@ -431,6 +445,14 @@
               ><input id="corrected" type="checkbox" /> Corrected</label
             >
           </div>
+          <div class="attitude-panel">
+            <svg viewBox="0 0 240 120" role="img" aria-label="Measured board tilt">
+              <path d="M15 60H225 M120 10V110" class="gridline" />
+              <g id="attitude-board"><rect x="65" y="42" width="110" height="36" rx="6" /><path d="M120 25V95 M50 60H190" /></g>
+            </svg>
+            <div><strong id="tilt-reading">Waiting for MPU6050</strong><p id="telemetry-freshness">No samples</p></div>
+          </div>
+          <p class="footnote">MPU6050 measures motion and rotation. Tilt below assumes gravity dominates acceleration; it is not orbital tracking or an altitude measurement.</p>
           <div class="chart-label">
             <span>ACCELERATION · g</span
             ><span class="axis-legend">X <b>Y</b> <em>Z</em></span>
@@ -503,6 +525,17 @@
           </button>
         </article>
       </section>
+      <section class="panel" id="frequency-planner">
+        <span class="eyebrow">RADIO PLANNING / MANUAL INPUT</span>
+        <h2>Doppler & frequency estimate</h2>
+        <p>Estimate the received frequency from known radial velocity. Positive velocity means moving away. MPU6050 alone cannot supply orbital radial velocity. These controls calculate only; they do not retune either radio.</p>
+        <div class="doppler-controls">
+          <label>Nominal carrier (MHz)<input id="carrier-mhz" type="number" min="1" max="100000" step="0.001" value="433" /></label>
+          <label>Radial velocity (m/s)<input id="radial-velocity" type="number" min="-15000" max="15000" step="1" value="0" /></label>
+          <output id="doppler-result" aria-live="polite"></output>
+        </div>
+        <p class="footnote">First-order estimate: Δf = −f × v / c. Actual frequency control needs tracking inputs and coordinated Pi/ESP32 configuration.</p>
+      </section>
       <section id="classification" class="panel">
         <div class="panel-heading">
           <div>
@@ -558,13 +591,12 @@
           </table>
         </div>
         <p id="classification-empty" class="empty">
-          No classification reports yet. Run the Pi classification publisher to
-          import actual model results.
+          Waiting for image metadata from the Pi. Classification appears when metadata arrives, before image completion.
         </p>
         <p class="footnote">
           Recommendations describe the software policy; they do not command the
-          Pi or change mission scheduling. HTTP reports are not proof of LoRa
-          metadata delivery.
+          Pi or change mission scheduling. LoRa reports come from received image
+          metadata. Separate Pi HTTP reports retain their source label.
         </p>
       </section>
       <section id="activity" class="panel">

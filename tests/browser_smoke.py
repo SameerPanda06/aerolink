@@ -4,10 +4,13 @@ Set CHROMIUM_PATH to use a system Chromium, or install Playwright's browser.
 """
 import os
 import re
+from datetime import datetime, timezone
 from io import BytesIO
 from PIL import Image
 
 from playwright.sync_api import expect, sync_playwright
+
+BASE = os.environ.get('AEROLINK_TEST_URL', 'http://127.0.0.1:8000')
 
 
 with sync_playwright() as playwright:
@@ -18,12 +21,12 @@ with sync_playwright() as playwright:
     page = browser.new_page(viewport={'width': 1440, 'height': 1080})
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
-    page.goto('http://127.0.0.1:8000')
+    page.goto(BASE)
     expect(page.locator('#connection')).to_contain_text('API connected')
     assert page.locator('#gravity option').count() == 6
     page.select_option('#gravity', '-x')
     assert page.locator('#gravity').input_value() == '-x'
-    baseline = page.request.get('http://127.0.0.1:8000/api/dashboard').json()['event_count']
+    baseline = page.request.get(BASE + '/api/dashboard').json()['event_count']
     page.get_by_role('button', name='Explore demo').click()
     expect(page.locator('#event-count')).to_have_text('162')
     assert page.locator('#notice').is_visible()
@@ -45,7 +48,7 @@ with sync_playwright() as playwright:
         panel.scroll_into_view_if_needed()
         expect(panel).to_have_class(re.compile('.*is-visible.*'))
     page.locator('.intro').scroll_into_view_if_needed()
-    assert page.request.get('http://127.0.0.1:8000/api/dashboard').json()['event_count'] == baseline
+    assert page.request.get(BASE + '/api/dashboard').json()['event_count'] == baseline
     page.screenshot(path='/tmp/aerolink-desktop.png', full_page=True, animations='disabled')
     page.set_viewport_size({'width': 390, 'height': 844})
     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
@@ -66,7 +69,7 @@ with sync_playwright() as playwright:
     expect(page.locator('#connection')).to_contain_text('API connected')
     assert not page.locator('#notice').is_visible()
     # A real API-shaped report must render as text, without treating metadata as HTML.
-    snapshot = page.request.get('http://127.0.0.1:8000/api/dashboard').json()
+    snapshot = page.request.get(BASE + '/api/dashboard').json()
     snapshot['classifications'] = [{'image_id':'<b>IMG-TEST</b>','classification':'CLOUDY',
                                     'confidence':.4151,'recommended_action':'defer','source':'pi_http'}]
     page.route('**/api/dashboard', lambda route: route.fulfill(json=snapshot))
@@ -107,6 +110,38 @@ with sync_playwright() as playwright:
     expect(page.locator('#image-open')).to_be_disabled()
     expect(page.locator('#received-image')).not_to_be_visible()
     expect(page.locator('#signal-label')).to_have_text('No recorded radio measurements')
+    transfer = snapshot['transfers'][0]
+    transfer['status'] = 'receiving'
+    transfer['received'] = 2
+    transfer['metadata'] = {'mission_id':'NEX-000002','image_id':'IMG-000004','classification':'CLEAR',
+        'confidence':.889,'action':'keep','captured_at':'2025-12-28T18:38:11Z',
+        'capture_source':'sentinel-2-l2a','bbox':[-118,34,-117,35], 'jpeg_quality':85,
+        'original_bytes':69414,'compressed_bytes':57776,'original_dimensions':[512,512],
+        'transmitted_dimensions':[512,512],'altitude_m_agl':None,'cloud_cover_percent':.05}
+    transfer['timing'] = {'elapsed_seconds':2,'receiving_bytes_per_second':200}
+    expect(page.locator('#thumbnail-placeholder')).to_have_text('Receiving image')
+    expect(page.locator('#selected-prediction')).to_contain_text('88.9%')
+    expect(page.locator('#selected-facts')).to_contain_text('sentinel-2-l2a')
+    expect(page.locator('#selected-facts')).to_contain_text('200.0 B/s')
+    expect(page.locator('#metadata-download')).to_have_attribute('href','/api/transfers/AABBCCDD/metadata')
+    assert page.locator('#selected-thumbnail').is_hidden()
+    page.locator('#radial-velocity').fill('1000')
+    expect(page.locator('#doppler-result')).to_contain_text('-1444.3 Hz')
+    page.locator('#radial-velocity').fill('-1000')
+    expect(page.locator('#doppler-result')).to_contain_text('433.001444 MHz')
+    telemetry = {'samples':[{'recorded_at':datetime.now(timezone.utc).isoformat(),'source':'pi_http',
+        'raw':{'accel_x_g':0,'accel_y_g':0.5,'accel_z_g':0.866,'gyro_x_dps':0,'gyro_y_dps':0,'gyro_z_dps':0},'corrected':None}],
+        'calibration':None,'calibration_window':{'fresh_samples':1}}
+    page.route('**/api/telemetry?*', lambda route: route.fulfill(json=telemetry))
+    expect(page.locator('#tilt-reading')).to_contain_text('Roll 30.0°')
+    expect(page.locator('#telemetry-freshness')).to_contain_text('Live')
+    assert 'rotate(30.' in page.locator('#attitude-board').get_attribute('transform')
+    telemetry['samples'][0]['recorded_at'] = '2020-01-01T00:00:00Z'
+    expect(page.locator('#telemetry-freshness')).to_contain_text('Stale')
+    page.unroute('**/api/telemetry?*')
+    for width in (320,390,768,1440):
+        page.set_viewport_size({'width':width,'height':900})
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), f'Metadata overflow at {width}px'
     page.unroute('**/api/dashboard')
     page.emulate_media(reduced_motion='reduce')
     expect(page.locator('#motion-toggle')).to_have_text('Motion reduced')

@@ -206,7 +206,7 @@
     find("science-source").textContent = demo
       ? "Synthetic demonstration"
       : "Real model output";
-    find("stage-manifest").classList.toggle("is-done", !!transfer?.bytes);
+    find("stage-manifest").classList.toggle("is-done", !!transfer?.metadata);
     find("stage-chunks").classList.toggle(
       "is-done",
       !!transfer?.total && transfer.received === transfer.total,

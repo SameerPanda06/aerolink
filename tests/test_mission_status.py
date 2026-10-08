@@ -25,6 +25,8 @@ class MissionStatusTests(unittest.TestCase):
             with patch.object(mission, 'find_classifier', return_value=source), \
                  patch.object(mission, 'run_classifier', return_value={'class':'CLOUDY','confidence':.4151}), \
                  patch.object(mission, 'prepare_jpeg', side_effect=prepare), \
+                 patch.object(mission, 'make_metadata', side_effect=lambda a,b,c,d,e,f: d), \
+                 patch.object(mission, 'send_metadata', side_effect=lambda radio, meta, send: send(radio, 0, b'meta')), \
                  patch.object(mission, 'SX1278') as radio, \
                  patch.object(mission, 'send_chunk', side_effect=sends) as sender, \
                  patch.object(mission, 'request_image_status', side_effect=requested) as requester, \

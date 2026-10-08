@@ -27,10 +27,61 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+class ImageMetadata(BaseModel):
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    schema_version: Literal[1]
+    mission_id: str = Field(min_length=1, max_length=128)
+    image_id: str = Field(min_length=1, max_length=128)
+    transfer_id: str = Field(pattern=r'^[a-fA-F0-9]{8}$')
+    captured_at: datetime | None = None
+    processed_at: datetime
+    capture_source: str = Field(max_length=128)
+    scene_id: str | None = Field(default=None, max_length=256)
+    bbox: list[float] | None = Field(default=None, min_length=4, max_length=4)
+    cloud_cover_percent: float | None = Field(default=None, ge=0, le=100)
+    altitude_m_agl: float | None = None
+    altitude_reference: str = Field(max_length=64)
+    format: Literal['JPEG']
+    original_dimensions: list[int] = Field(min_length=2, max_length=2)
+    transmitted_dimensions: list[int] = Field(min_length=2, max_length=2)
+    original_bytes: int = Field(gt=0)
+    compressed_bytes: int = Field(gt=0, le=512000)
+    total_chunks: int = Field(gt=0, le=1896)
+    sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    classification: Literal['CLEAR', 'CLOUDY', 'NOT_VISIBLE']
+    confidence: float = Field(ge=0, le=1)
+    action: Literal['keep', 'defer', 'discard']
+    priority: int = Field(ge=1, le=3)
+    jpeg_quality: int = Field(ge=1, le=100)
+    compression_ms: float = Field(ge=0)
+    probabilities: dict[str, float] = Field(default_factory=dict)
+    model_version: str = Field(max_length=128)
+
+    @model_validator(mode='after')
+    def check(self):
+        if self.sha256[:8].lower() != self.transfer_id.lower():
+            raise ValueError('Metadata hash/transfer mismatch')
+        if self.total_chunks != math.ceil(self.compressed_bytes / 200):
+            raise ValueError('Metadata chunk count mismatch')
+        if any(v <= 0 or v > 20000 for v in self.original_dimensions + self.transmitted_dimensions):
+            raise ValueError('Invalid image dimensions')
+        if any(k not in ('CLEAR', 'CLOUDY', 'NOT_VISIBLE') or not 0 <= v <= 1 for k, v in self.probabilities.items()):
+            raise ValueError('Invalid class probabilities')
+        if any(stamp and stamp.tzinfo is None for stamp in (self.captured_at, self.processed_at)):
+            raise ValueError('Metadata timestamps require timezone')
+        if self.bbox:
+            w, s, e, n = self.bbox
+            if not (-180 <= w <= e <= 180 and -90 <= s <= n <= 90):
+                raise ValueError('Invalid geographic bounds')
+        return self
+
+
 class Event(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     event_id: str = Field(min_length=1, max_length=180)
-    type: Literal['receiver_ready', 'manifest', 'chunk', 'image_complete', 'telemetry', 'classification', 'rf_sample']
+    type: Literal['receiver_ready', 'manifest', 'chunk', 'image_complete', 'telemetry', 'classification', 'rf_sample', 'metadata']
+    metadata: ImageMetadata | None = None
+    session_id: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
     transfer_id: str | None = Field(default=None, pattern=r'^[0-9a-fA-F]{8}$')
     received_at: datetime | None = None
     device: str = Field(default='AEROLINK-01', min_length=1, max_length=64)
@@ -60,6 +111,9 @@ class Event(BaseModel):
 
     @model_validator(mode='after')
     def validate_payload(self):
+        if self.type == 'metadata':
+            if not self.metadata or not self.transfer_id or self.metadata.transfer_id.upper() != self.transfer_id.upper():
+                raise ValueError('Matching image metadata required')
         if self.received_at and self.received_at.tzinfo is None:
             raise ValueError('received_at must include timezone')
         if self.type in ('manifest', 'chunk', 'image_complete') and not self.transfer_id:
@@ -130,8 +184,11 @@ def create_app(db_path=None):
             CREATE TABLE IF NOT EXISTS calibrations (device TEXT PRIMARY KEY, payload TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS images (transfer_id TEXT PRIMARY KEY,
                 sha256 TEXT NOT NULL, bytes INTEGER NOT NULL, saved_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS image_metadata (transfer_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS transfer_event_lookup ON events(type, json_extract(payload,'$.transfer_id'), seq);
         ''')
+        if 'session_id' not in [r['name'] for r in conn.execute('PRAGMA table_info(transfers)')]:
+            conn.execute('ALTER TABLE transfers ADD COLUMN session_id TEXT')
 
     image_directory = database.parent / 'images'
     image_directory.mkdir(exist_ok=True)
@@ -180,11 +237,33 @@ def create_app(db_path=None):
                 if {k: v for k, v in old.items() if k not in ignored} != {k: v for k, v in payload.items() if k not in ignored}:
                     raise HTTPException(409, 'event_id already belongs to a different event')
                 return {'accepted': True, 'duplicate': True}
+            if event.type in ('metadata', 'manifest'):
+                previous_meta = conn.execute('SELECT payload FROM image_metadata WHERE transfer_id=?', (event.transfer_id,)).fetchone()
+                manifest_row = conn.execute("SELECT payload FROM events WHERE type='manifest' AND json_extract(payload,'$.transfer_id')=? LIMIT 1", (event.transfer_id,)).fetchone()
+                meta = payload.get('metadata') or (json.loads(previous_meta[0]) if previous_meta else None)
+                manifest = payload if event.type == 'manifest' else (json.loads(manifest_row[0]) if manifest_row else None)
+                if previous_meta and event.type == 'metadata' and json.loads(previous_meta[0])['sha256'] != meta['sha256']:
+                    raise HTTPException(409, 'Metadata transfer ID collision')
+                if meta and manifest and (manifest.get('sha256') != meta['sha256'] or manifest.get('bytes') != meta['compressed_bytes'] or manifest.get('chunks') != meta['total_chunks']):
+                    raise HTTPException(409, 'Metadata and image manifest disagree')
+            if event.transfer_id and event.type in ('manifest', 'chunk', 'image_complete', 'rf_sample'):
+                active = conn.execute('SELECT session_id FROM transfers WHERE transfer_id=?', (event.transfer_id,)).fetchone()
+                if active and active[0] and active[0] != event.session_id:
+                    raise HTTPException(409, 'Event belongs to an older transfer session')
             conn.execute('INSERT INTO events(event_id,type,device,ingested_at,payload) VALUES(?,?,?,?,?)',
                          (event.event_id, event.type, event.device, stamp, json.dumps(payload)))
-            if event.transfer_id and event.type in ('manifest', 'chunk', 'image_complete'):
+            if event.type == 'metadata':
+                conn.execute('INSERT OR REPLACE INTO image_metadata VALUES(?,?)', (event.transfer_id, json.dumps(payload['metadata'])))
+            if event.transfer_id and event.type in ('manifest', 'chunk', 'image_complete', 'metadata'):
                 conn.execute('INSERT OR IGNORE INTO transfers(transfer_id,updated_at) VALUES(?,?)', (event.transfer_id, stamp))
-                if event.type == 'manifest':
+                if event.type == 'metadata':
+                    active = conn.execute('SELECT session_id FROM transfers WHERE transfer_id=?', (event.transfer_id,)).fetchone()[0]
+                    if event.session_id and active != event.session_id:
+                        conn.execute('DELETE FROM chunks WHERE transfer_id=?', (event.transfer_id,))
+                        conn.execute("UPDATE transfers SET received=0,status='receiving',session_id=? WHERE transfer_id=?", (event.session_id,event.transfer_id))
+                    conn.execute('UPDATE transfers SET total=COALESCE(total,?), bytes=COALESCE(bytes,?) WHERE transfer_id=?',
+                                 (event.metadata.total_chunks, event.metadata.compressed_bytes, event.transfer_id))
+                elif event.type == 'manifest':
                     conn.execute('UPDATE transfers SET total=?, bytes=? WHERE transfer_id=?', (event.chunks, event.bytes, event.transfer_id))
                 elif event.type == 'chunk':
                     conn.execute('INSERT OR IGNORE INTO chunks VALUES(?,?)', (event.transfer_id, event.chunk))
@@ -207,8 +286,19 @@ def create_app(db_path=None):
         with db() as conn:
             transfers = [dict(r) for r in conn.execute('SELECT * FROM transfers ORDER BY updated_at DESC LIMIT 100')]
             for item in transfers:
+                meta = conn.execute('SELECT payload FROM image_metadata WHERE transfer_id=?', (item['transfer_id'],)).fetchone()
+                item['metadata'] = json.loads(meta[0]) if meta else None
+                timeline = conn.execute("SELECT payload,ingested_at FROM events WHERE type IN ('manifest','chunk','image_complete') AND json_extract(payload,'$.transfer_id')=? AND json_extract(payload,'$.session_id') IS ? ORDER BY seq", (item['transfer_id'],item['session_id'])).fetchall()
+                stamps = [json.loads(r['payload']).get('received_at', r['ingested_at']) for r in timeline]
+                elapsed = max(0, (datetime.fromisoformat(stamps[-1]) - datetime.fromisoformat(stamps[0])).total_seconds()) if len(stamps) > 1 else None
+                item['timing'] = {'started_at': stamps[0] if stamps else None, 'last_activity_at': stamps[-1] if stamps else None,
+                                  'elapsed_seconds': elapsed}
                 item['observed_chunks'] = [r[0] for r in conn.execute('SELECT chunk FROM chunks WHERE transfer_id=? ORDER BY chunk', (item['transfer_id'],))]
-                rf = conn.execute("SELECT payload,ingested_at FROM events WHERE type='rf_sample' AND json_extract(payload,'$.transfer_id')=? ORDER BY seq DESC LIMIT 1", (item['transfer_id'],)).fetchone()
+                manifest = next((json.loads(r['payload']) for r in timeline if json.loads(r['payload'])['type'] == 'manifest'), None)
+                observed_bytes = sum(max(0, min(manifest['chunk_size'], manifest['bytes'] - (index - 1) * manifest['chunk_size'])) for index in item['observed_chunks']) if manifest else None
+                item['timing']['observed_image_bytes'] = observed_bytes
+                item['timing']['receiving_bytes_per_second'] = observed_bytes / elapsed if observed_bytes is not None and elapsed and elapsed > 0 else None
+                rf = conn.execute("SELECT payload,ingested_at FROM events WHERE type='rf_sample' AND json_extract(payload,'$.transfer_id')=? AND json_extract(payload,'$.session_id') IS ? ORDER BY seq DESC LIMIT 1", (item['transfer_id'],item['session_id'])).fetchone()
                 item['radio'] = None
                 if rf:
                     stats = conn.execute('''SELECT COUNT(*) AS samples,
@@ -217,17 +307,22 @@ def create_app(db_path=None):
                         ROUND(AVG(json_extract(payload,'$.rssi_dbm')),2) AS rssi_mean,
                         ROUND(AVG(json_extract(payload,'$.snr_db')),2) AS snr_mean,
                         SUM(json_extract(payload,'$.packet_bytes')) AS observed_frame_bytes
-                        FROM events WHERE type='rf_sample' AND json_extract(payload,'$.transfer_id')=?''', (item['transfer_id'],)).fetchone()
+                        FROM events WHERE type='rf_sample' AND json_extract(payload,'$.transfer_id')=? AND json_extract(payload,'$.session_id') IS ?''', (item['transfer_id'],item['session_id'])).fetchone()
                     sample = json.loads(rf['payload'])
                     item['radio'] = dict(stats) | {k: sample[k] for k in ('rssi_dbm', 'snr_db', 'packet_bytes', 'payload_bytes')}
                     item['radio']['measured_at'] = sample.get('received_at', rf['ingested_at'])
                 image = conn.execute('SELECT * FROM images WHERE transfer_id=?', (item['transfer_id'],)).fetchone()
-                item['image'] = dict(image) | {'url': f"/api/transfers/{item['transfer_id']}/image"} if image and (image_directory / f"{image['sha256']}.jpg").is_file() else None
+                item['image'] = dict(image) | {'url': f"/api/transfers/{item['transfer_id']}/image"} if item['status'] == 'verified' and image and (image_directory / f"{image['sha256']}.jpg").is_file() else None
             latest = conn.execute('SELECT ingested_at FROM events ORDER BY seq DESC LIMIT 1').fetchone()
             count = conn.execute('SELECT COUNT(*) FROM events').fetchone()[0]
             verified = conn.execute("SELECT COUNT(*) FROM transfers WHERE status='verified'").fetchone()[0]
             recent = [json.loads(r['payload']) | {'ingested_at': r['ingested_at']} for r in conn.execute('SELECT * FROM events ORDER BY seq DESC LIMIT 12')]
             classifications = [json.loads(r['payload']) | {'ingested_at': r['ingested_at']} for r in conn.execute("SELECT * FROM events WHERE type='classification' ORDER BY seq DESC LIMIT 20")]
+            linked = [dict(image_id=t['metadata']['image_id'], classification=t['metadata']['classification'], confidence=t['metadata']['confidence'],
+                           recommended_action=t['metadata']['action'], transfer_id=t['transfer_id'], source='lora', status=t['status'])
+                      for t in transfers if t['metadata']]
+            linked_ids = {r['transfer_id'] for r in linked}
+            classifications = (linked + [r for r in classifications if r.get('transfer_id') not in linked_ids])[:20]
         return {'event_count': count, 'verified_count': verified, 'last_event_at': latest[0] if latest else None,
                 'transfers': transfers, 'recent_events': recent, 'classifications': classifications,
                 'image_download_available': any(t['image'] for t in transfers)}
@@ -237,6 +332,16 @@ def create_app(db_path=None):
         if not re.fullmatch(r'[0-9a-fA-F]{8}', value):
             raise HTTPException(422, 'Transfer ID must be eight hexadecimal characters')
         return value.upper()
+
+    @app.get('/api/transfers/{transfer_id}/metadata')
+    def metadata(transfer_id: str):
+        from fastapi.responses import JSONResponse
+        identity = transfer_name(transfer_id)
+        with db() as conn:
+            record = conn.execute('SELECT payload FROM image_metadata WHERE transfer_id=?', (identity,)).fetchone()
+        if not record:
+            raise HTTPException(404, 'No received image metadata')
+        return JSONResponse(json.loads(record[0]), headers={'Content-Disposition': f'attachment; filename="{identity}.metadata.json"'})
 
     @app.put('/api/transfers/{transfer_id}/image', dependencies=[Depends(authorize)])
     async def store_image(transfer_id: str, request: Request):
