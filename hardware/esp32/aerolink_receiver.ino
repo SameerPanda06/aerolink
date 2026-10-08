@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <LittleFS.h>
+#include <ctype.h>
+#include <stdlib.h>
 #include "mbedtls/sha256.h"
 
 #define NSS 5
@@ -58,7 +60,7 @@
 #define IMAGE_CHUNK 0xC1
 #define IMAGE_STATUS 0xC2
 #define IMAGE_STATUS_REQUEST 0xC3
-#define IMAGE_MAX_CHUNKS 2048
+#define IMAGE_MAX_CHUNKS 1896 // 10-byte status + 237-byte bitmap fits 247-byte payload.
 #define IMAGE_BITMAP_BYTES (IMAGE_MAX_CHUNKS / 8)
 #define IMAGE_PATH "/aerolink_image.part"
 #define IMAGE_META_PATH "/aerolink_image.meta"
@@ -95,6 +97,64 @@ uint8_t imageExpectedHash[32];
 uint8_t imageBitmap[IMAGE_BITMAP_BYTES];
 File imageFile;
 char imageFinalPath[48] = IMAGE_DIR "/unknown.jpg";
+File exportFile;
+uint32_t exportTransfer = 0;
+uint32_t exportOffset = 0;
+unsigned long lastRadioPacketAt = 0;
+char serialCommand[32];
+uint8_t serialCommandLength = 0;
+
+// USB export is requested by the host only for a completed file. Each loop
+// emits at most 32 bytes (hex framed), and LoRa reception always takes priority.
+void serviceImageExport() {
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\r') continue;
+    if (c != '\n') {
+      if (serialCommandLength < sizeof(serialCommand) - 1) serialCommand[serialCommandLength++] = c;
+      continue;
+    }
+    serialCommand[serialCommandLength] = '\0';
+    if (serialCommandLength == 15 && strncmp(serialCommand, "EXPORT ", 7) == 0) {
+      bool valid = true;
+      for (uint8_t i = 7; i < 15; i++) if (!isxdigit((unsigned char)serialCommand[i])) valid = false;
+      if (valid && !imageActive && !exportFile) {
+        exportTransfer = strtoul(serialCommand + 7, nullptr, 16);
+        char path[48];
+        snprintf(path, sizeof(path), IMAGE_DIR "/%08lX.jpg", (unsigned long)exportTransfer);
+        exportFile = LittleFS.open(path, "r");
+        exportOffset = 0;
+        if (exportFile && exportFile.size() > 0 && exportFile.size() <= 512000) {
+          Serial.printf("EXPORT_BEGIN %08lX %lu\n", (unsigned long)exportTransfer, (unsigned long)exportFile.size());
+        } else {
+          if (exportFile) exportFile.close();
+          Serial.printf("EXPORT_ERROR %08lX unavailable\n", (unsigned long)exportTransfer);
+        }
+      } else if (valid) {
+        Serial.printf("EXPORT_ERROR %s busy\n", serialCommand + 7);
+      }
+    }
+    serialCommandLength = 0;
+  }
+  if (!exportFile) return;
+  if (imageActive) {
+    exportFile.close();
+    Serial.printf("EXPORT_ERROR %08lX radio_transfer_started\n", (unsigned long)exportTransfer);
+    return;
+  }
+  if (millis() - lastRadioPacketAt < 800 || Serial.availableForWrite() < 100) return;
+  uint8_t buffer[32];
+  size_t count = exportFile.read(buffer, sizeof(buffer));
+  if (!count) {
+    exportFile.close();
+    Serial.printf("EXPORT_END %08lX %lu\n", (unsigned long)exportTransfer, (unsigned long)exportOffset);
+    return;
+  }
+  Serial.printf("EXPORT_DATA %08lX %lu ", (unsigned long)exportTransfer, (unsigned long)exportOffset);
+  for (size_t i = 0; i < count; i++) Serial.printf("%02x", buffer[i]);
+  Serial.println();
+  exportOffset += count;
+}
 
 void setLed(int pin, bool on) {
   if (pin < 0) return;
@@ -263,9 +323,11 @@ bool parseManifest(const uint8_t *payload, uint8_t length) {
   Serial.printf("[IMAGE] MANIFEST transfer=%08lX bytes=%lu chunks=%u chunk_size=%u\n",
                 (unsigned long)imageTransferId, (unsigned long)imageSize,
                 imageTotalChunks, imageChunkSize);
-  Serial.printf("EVENT {\"type\":\"manifest\",\"transfer_id\":\"%08lX\",\"bytes\":%lu,\"chunks\":%u,\"chunk_size\":%u}\n",
+  Serial.printf("EVENT {\"type\":\"manifest\",\"transfer_id\":\"%08lX\",\"bytes\":%lu,\"chunks\":%u,\"chunk_size\":%u,\"sha256\":\"",
                 (unsigned long)imageTransferId, (unsigned long)imageSize,
                 imageTotalChunks, imageChunkSize);
+  printHash(imageExpectedHash);
+  Serial.println("\"}");
   return true;
 }
 
@@ -408,12 +470,17 @@ void loop() {
     Serial.println("[RF] PHY CRC ERROR");
     writeReg(IRQ, 0xFF); startRX(); setIdleLeds(); return;
   }
-  if (!(irq & RX_DONE)) { delay(2); return; }
+  if (!(irq & RX_DONE)) { serviceImageExport(); delay(2); return; }
   setReceivingLeds();
+  lastRadioPacketAt = millis();
+  // Capture metrics before clearing IRQ/restarting RX or transmitting ACKs.
+  int packetRssi = (int)readReg(RSSI) - 164; // SX1278 433 MHz uses LF RSSI offset.
+  float packetSnr = (int8_t)readReg(SNR) / 4.0f;
+  if (packetSnr < 0) packetRssi += (int)packetSnr;
   uint8_t length = readReg(RX_BYTES); uint8_t current = readReg(RX_CURRENT); writeReg(FIFO_ADDR, current);
   uint8_t packet[255]; for (uint16_t i = 0; i < length; i++) packet[i] = readReg(FIFO);
   writeReg(IRQ, 0xFF); startRX();
-  Serial.printf("[RX] RX_DONE length=%u RSSI=%d SNR=%.2f\n", length, (int)readReg(RSSI) - 157, (int8_t)readReg(SNR) / 4.0f);
+  Serial.printf("[RX] RX_DONE length=%u RSSI=%d SNR=%.2f\n", length, packetRssi, packetSnr);
   if (length < 8 || packet[0] != MAGIC || packet[1] != PROTOCOL_VERSION) {
     Serial.println("[RX] INVALID HEADER"); setIdleLeds(); return;
   }
@@ -470,7 +537,7 @@ void loop() {
     Serial.printf("[TX] ACK FAILED seq=%u\n", sequence);
   }
   if (imageStatusPending) {
-    uint8_t status[18];
+    uint8_t status[280]; // Status includes bitmap; 156 chunks require 38 bytes.
     uint8_t statusLength = buildImageStatus(status);
     // Let the Pi finish consuming the final ACK before completion status.
     delay(400);
@@ -485,4 +552,12 @@ void loop() {
   }
   startRX();
   setIdleLeds();
+  // Measurements are separate events: retries must not conflict with deduped chunks.
+  Serial.printf("EVENT {\"type\":\"rf_sample\",\"rssi_dbm\":%d,\"snr_db\":%.2f,\"packet_bytes\":%u,\"payload_bytes\":%u,\"sequence\":%u",
+                packetRssi, packetSnr, length, payloadLength, sequence);
+  if ((payloadLength == 45 && payload[0] == IMAGE_MANIFEST) || (payloadLength >= 9 && payload[0] == IMAGE_CHUNK)) {
+    uint32_t transfer = ((uint32_t)payload[1] << 24) | ((uint32_t)payload[2] << 16) | ((uint32_t)payload[3] << 8) | payload[4];
+    Serial.printf(",\"transfer_id\":\"%08lX\"", (unsigned long)transfer);
+  }
+  Serial.println("}");
 }

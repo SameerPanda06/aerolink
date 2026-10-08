@@ -1,6 +1,18 @@
 name: Ground software checks
 on: [push, pull_request]
 jobs:
+  esp32-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Compile receiver with Arduino-ESP32 3.x
+        run: |
+          arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core install esp32:esp32@3.3.2 --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          mkdir -p "$RUNNER_TEMP/aerolink_receiver"
+          cp hardware/esp32/aerolink_receiver.ino "$RUNNER_TEMP/aerolink_receiver/aerolink_receiver.ino"
+          arduino-cli compile --fqbn esp32:esp32:esp32 "$RUNNER_TEMP/aerolink_receiver"
   software:
     runs-on: ubuntu-latest
     steps:
@@ -11,7 +23,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: pip install -r backend/requirements.txt playwright==1.63.0
+      - run: pip install -r backend/requirements.txt -r tools/requirements-receiver.txt playwright==1.63.0
       - run: python -m unittest discover -s tests -v
       - run: node --check frontend/app.js
       - run: python -m playwright install --with-deps chromium

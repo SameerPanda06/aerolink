@@ -7,6 +7,7 @@
     <title>AeroLink · Ground station</title>
     <link rel="stylesheet" href="/assets/style.css" />
     <link rel="stylesheet" href="/assets/experience.css" />
+    <link rel="stylesheet" href="/assets/downlink.css" />
     <script defer src="/assets/app.js"></script>
     <script defer src="/assets/experience.js"></script>
   </head>
@@ -256,7 +257,10 @@
                     <th>TRANSFER</th>
                     <th>SIZE</th>
                     <th>RECEIVED</th>
+                    <th>RSSI / SNR</th>
+                    <th>LAST FRAME</th>
                     <th>INTEGRITY</th>
+                    <th>IMAGE</th>
                   </tr>
                 </thead>
                 <tbody id="transfer-rows"></tbody>
@@ -266,8 +270,9 @@
               No transfers yet. Connect the host event bridge to begin.
             </p>
             <p class="footnote">
-              A verified record confirms storage on the ESP32. Image bytes are
-              not yet exported to this server.
+              Receiver verification confirms ESP32 storage. View becomes
+              available after USB export and an independent full SHA-256 check
+              on this server.
             </p>
             <div class="transfer-stages" aria-label="Transfer stages">
               <div id="stage-manifest">
@@ -321,7 +326,95 @@
             >
           </div>
         </div>
+        <div class="downlink-details">
+          <article class="radio-detail" aria-labelledby="radio-heading">
+            <span class="eyebrow">RECEIVER MEASUREMENTS</span>
+            <h3 id="radio-heading">Signal & packet detail</h3>
+            <div class="signal-heading">
+              <strong id="signal-label">Awaiting measurements</strong>
+              <span id="signal-value">—</span>
+            </div>
+            <meter
+              id="signal-meter"
+              min="-140"
+              max="0"
+              value="-140"
+              aria-label="Received signal power in dBm"
+            ></meter>
+            <p class="footnote">
+              Received power at the ESP32. This is a recorded measurement, not a
+              live connection indicator.
+            </p>
+            <dl class="radio-values">
+              <div>
+                <dt>Latest SNR</dt>
+                <dd id="radio-snr">—</dd>
+              </div>
+              <div>
+                <dt>Last radio frame</dt>
+                <dd id="radio-frame">—</dd>
+              </div>
+              <div>
+                <dt>Frame payload</dt>
+                <dd id="radio-payload">—</dd>
+              </div>
+              <div>
+                <dt>Mean RSSI / SNR</dt>
+                <dd id="radio-average">—</dd>
+              </div>
+              <div>
+                <dt>RSSI range</dt>
+                <dd id="radio-range">—</dd>
+              </div>
+              <div>
+                <dt>Observed frames / bytes</dt>
+                <dd id="radio-observed">—</dd>
+              </div>
+            </dl>
+            <p class="footnote">
+              Frame length includes the 8-byte AeroLink header/checksum.
+              Observed frames include retransmissions and manifests; JPEG size
+              counts image bytes only.
+            </p>
+          </article>
+          <article class="image-detail" aria-labelledby="image-heading">
+            <div class="image-heading">
+              <div>
+                <span class="eyebrow">RECEIVED ON THE GROUND</span>
+                <h3 id="image-heading">Image inspection</h3>
+              </div>
+              <span id="image-state" class="tag">Waiting for export</span>
+            </div>
+            <div class="image-surface">
+              <img
+                id="received-image"
+                alt="Selected JPEG received by the ESP32 and verified on the server"
+                hidden
+              />
+              <p id="image-placeholder">
+                Select a transfer. Its JPEG will appear here after verified
+                export.
+              </p>
+            </div>
+            <div class="image-actions">
+              <button id="image-open" type="button" disabled>
+                View full image ↗
+              </button>
+              <a id="image-download" hidden>Download JPEG ↓</a>
+            </div>
+            <p id="image-hash" class="image-hash">
+              Full SHA-256 will appear after server verification.
+            </p>
+          </article>
+        </div>
       </section>
+      <dialog id="image-dialog" aria-labelledby="image-dialog-title">
+        <div class="image-dialog-heading">
+          <h2 id="image-dialog-title">Received image</h2>
+          <button id="image-close" type="button" autofocus>Close ×</button>
+        </div>
+        <img id="image-full" alt="Full resolution received JPEG" />
+      </dialog>
       <section id="instruments" class="instrument-grid">
         <article class="panel">
           <div class="panel-heading">

@@ -1,4 +1,6 @@
 import json
+import hashlib
+from io import BytesIO
 import os
 import sqlite3
 import tempfile
@@ -8,11 +10,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx
+from PIL import Image
 from fastapi.testclient import TestClient
 
 from backend.app import AXES, create_app
 from tools.forward_events import collect, forward
 from tools.publish_classification import make_event, parse_result
+from tools.receiver_gateway import ExportReceiver, connect, uploader
+import threading
 
 
 class GroundTests(unittest.TestCase):
@@ -46,6 +51,117 @@ class GroundTests(unittest.TestCase):
     def test_failure_is_not_verified(self):
         self.post(dict(event_id='failure', type='image_complete',transfer_id='AABBCCDD',sha256_ok=False))
         self.assertEqual(self.client.get('/api/dashboard').json()['verified_count'], 0)
+
+    def image_fixture(self):
+        buffer = BytesIO()
+        Image.new('RGB', (32, 24), (120, 170, 205)).save(buffer, format='JPEG')
+        blob = buffer.getvalue()
+        digest = hashlib.sha256(blob).hexdigest()
+        identity = digest[:8].upper()
+        return blob, digest, identity
+
+    def register_image(self, blob, digest, identity):
+        self.assertEqual(self.post(dict(event_id='manifest-image', type='manifest', transfer_id=identity,
+            bytes=len(blob), chunks=(len(blob)+199)//200, chunk_size=200, sha256=digest)).status_code, 200)
+        self.assertEqual(self.post(dict(event_id='complete-image', type='image_complete', transfer_id=identity,
+            sha256_ok=True, path=f'/images/{identity}.jpg')).status_code, 200)
+
+    def test_verified_image_roundtrip_and_rejection(self):
+        blob, digest, identity = self.image_fixture()
+        url = f'/api/transfers/{identity}/image'
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertEqual(self.client.put(url, content=blob, headers={'Content-Type':'image/jpeg'}).status_code, 409)
+        self.register_image(blob, digest, identity)
+        self.assertEqual(self.client.put(url, content=blob[:-1], headers={'Content-Type':'image/jpeg'}).status_code, 422)
+        self.assertEqual(self.client.put(url, content=blob, headers={'Content-Type':'text/html'}).status_code, 415)
+        with patch.dict(os.environ, {'AEROLINK_API_TOKEN':'test-secret'}):
+            self.assertEqual(self.client.put(url, content=blob, headers={'Content-Type':'image/jpeg'}).status_code,401)
+            response = self.client.put(url, content=blob, headers={'Content-Type':'image/jpeg','Authorization':'Bearer test-secret'})
+            self.assertEqual(response.status_code,200,response.text)
+        restarted = TestClient(create_app(self.path))
+        self.assertEqual(restarted.get(url).content, blob)
+        self.assertEqual(restarted.get(url).headers['content-type'], 'image/jpeg')
+        self.assertIn('attachment',restarted.get(url+'?download=true').headers['content-disposition'])
+        image = restarted.get('/api/dashboard').json()['transfers'][0]['image']
+        self.assertEqual(image['sha256'],digest)
+        self.assertTrue(restarted.get('/api/dashboard').json()['image_download_available'])
+        self.assertEqual(self.client.put('/api/transfers/invalid/image',content=blob,headers={'Content-Type':'image/jpeg'}).status_code,422)
+        self.assertEqual(self.client.put(url,content=b'x'*512001,headers={'Content-Type':'image/jpeg'}).status_code,413)
+
+    def test_non_jpeg_with_matching_hash_is_rejected(self):
+        blob = b'<html>not a received JPEG</html>'
+        digest = hashlib.sha256(blob).hexdigest()
+        identity = digest[:8].upper()
+        self.register_image(blob,digest,identity)
+        response = self.client.put(f'/api/transfers/{identity}/image',content=blob,headers={'Content-Type':'image/jpeg'})
+        self.assertEqual(response.status_code,422)
+        self.assertFalse(self.client.get('/api/dashboard').json()['image_download_available'])
+
+    def test_radio_metrics_include_retries_without_changing_chunks(self):
+        self.post(dict(event_id='rfmanifest',type='manifest',transfer_id='AABBCCDD',bytes=201,chunks=2,chunk_size=200))
+        for i in range(3):
+            response = self.post(dict(event_id=f'rf-{i}',type='rf_sample',transfer_id='AABBCCDD',
+                rssi_dbm=-40-i,snr_db=9+i/4,packet_bytes=217,payload_bytes=209,sequence=1))
+            self.assertEqual(response.status_code,200,response.text)
+        self.post(dict(event_id='onechunk',type='chunk',transfer_id='AABBCCDD',chunk=1,total=2,received=1))
+        transfer = self.client.get('/api/dashboard').json()['transfers'][0]
+        self.assertEqual(transfer['observed_chunks'],[1])
+        self.assertEqual(transfer['radio']['samples'],3)
+        self.assertEqual(transfer['radio']['observed_frame_bytes'],651)
+        self.assertEqual(transfer['radio']['rssi_mean'],-41)
+        self.assertEqual(transfer['radio']['snr_db'],9.5)
+        self.assertEqual(self.post(dict(event_id='badrf',type='rf_sample',rssi_dbm=-40,snr_db=10,
+            packet_bytes=95,payload_bytes=209,sequence=1)).status_code,422)
+
+    def test_usb_export_truncation_hash_and_restart_upload(self):
+        blob, digest, identity = self.image_fixture()
+        spool = Path(self.tmp.name)/'spool'
+        spool.mkdir()
+        conn = connect(spool/'gateway.sqlite3')
+        self.addCleanup(conn.close)
+        export = ExportReceiver(conn,spool)
+        export.remember(dict(type='manifest',transfer_id=identity,sha256=digest,bytes=len(blob)))
+        self.assertEqual(conn.execute('SELECT state FROM exports').fetchone()[0],'receiving')
+        export.remember(dict(type='image_complete',transfer_id=identity,sha256_ok=True))
+        self.assertEqual(conn.execute('SELECT state FROM exports').fetchone()[0],'waiting')
+        export.consume(f'EXPORT_ERROR {identity} unavailable')
+        self.assertEqual(conn.execute('SELECT state FROM exports').fetchone()[0],'unavailable')
+        export.remember(dict(type='image_complete',transfer_id=identity,sha256_ok=True))
+        export.consume(f'EXPORT_BEGIN {identity} {len(blob)}')
+        export.consume(f'EXPORT_DATA {identity} 0 {blob[:32].hex()}')
+        export.consume(f'EXPORT_END {identity} 32')
+        self.assertFalse((spool/f'{identity}.jpg').exists())
+        export.consume(f'EXPORT_BEGIN {identity} {len(blob)}')
+        corrupted = bytearray(blob)
+        corrupted[40] ^= 1
+        for offset in range(0,len(blob),32):
+            export.consume(f'EXPORT_DATA {identity} {offset} {corrupted[offset:offset+32].hex()}')
+        export.consume(f'EXPORT_END {identity} {len(blob)}')
+        self.assertFalse((spool/f'{identity}.jpg').exists())
+        self.assertEqual(conn.execute('SELECT state FROM exports').fetchone()[0],'waiting')
+        export.consume(f'EXPORT_BEGIN {identity} {len(blob)}')
+        for offset in range(0,len(blob),32):
+            export.consume(f'EXPORT_DATA {identity} {offset} {blob[offset:offset+32].hex()}')
+        export.consume(f'EXPORT_END {identity} {len(blob)}')
+        self.assertEqual((spool/f'{identity}.jpg').read_bytes(),blob)
+        self.assertEqual(conn.execute('SELECT state FROM exports').fetchone()[0],'ready')
+        self.register_image(blob,digest,identity)
+        stopped = threading.Event()
+        real_client = httpx.Client
+        def offline(request):
+            stopped.set()
+            return httpx.Response(503,json={'detail':'backend unavailable'})
+        with patch('tools.receiver_gateway.httpx.Client', side_effect=lambda **kw: real_client(transport=httpx.MockTransport(offline),**kw)):
+            uploader(spool/'gateway.sqlite3',spool/'events.jsonl',spool,'http://testserver',stopped)
+        self.assertEqual(conn.execute('SELECT state FROM exports').fetchone()[0],'ready')
+        stopped.clear()
+        def handler(request):
+            response = self.client.put(request.url.path, content=request.content, headers={'Content-Type':'image/jpeg'})
+            stopped.set()
+            return httpx.Response(response.status_code,json=response.json())
+        with patch('tools.receiver_gateway.httpx.Client', side_effect=lambda **kw: real_client(transport=httpx.MockTransport(handler),**kw)):
+            uploader(spool/'gateway.sqlite3',spool/'events.jsonl',spool,'http://testserver',stopped)
+        self.assertEqual(conn.execute('SELECT state FROM exports').fetchone()[0],'delivered')
 
     def test_validation_conflict_and_authorization(self):
         ready = dict(event_id='ready',type='receiver_ready',frequency_mhz=433)

@@ -4,6 +4,8 @@ Set CHROMIUM_PATH to use a system Chromium, or install Playwright's browser.
 """
 import os
 import re
+from io import BytesIO
+from PIL import Image
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -72,6 +74,39 @@ with sync_playwright() as playwright:
     expect(page.locator('#classification-rows')).to_contain_text('Unlinked · Pi HTTP')
     assert page.locator('#classification-rows b').count() == 0
     expect(page.locator('#science-cloudy')).to_have_text('1')
+    page.unroute('**/api/dashboard')
+    # Backend-verified JPEG availability controls the viewer. Browser fixtures
+    # exercise the UI without inserting synthetic records into the live database.
+    photo = BytesIO()
+    Image.new('RGB',(64,48),(112,158,181)).save(photo,format='JPEG')
+    snapshot['transfers'] = [{'transfer_id':'AABBCCDD','bytes':31078,'total':156,
+        'received':156,'status':'verified','observed_chunks':list(range(1,157)),
+        'radio':{'rssi_dbm':-42,'snr_db':9.5,'packet_bytes':95,'payload_bytes':87,
+                 'samples':160,'rssi_mean':-43,'snr_mean':9.2,'rssi_min':-47,
+                 'rssi_max':-40,'observed_frame_bytes':34000},
+        'image':{'sha256':'aabbccdd'+'0'*56,'url':'/api/transfers/AABBCCDD/image'}}]
+    page.route('**/api/transfers/AABBCCDD/image',lambda route: route.fulfill(content_type='image/jpeg',body=photo.getvalue()))
+    page.route('**/api/dashboard',lambda route: route.fulfill(json=snapshot))
+    expect(page.locator('#signal-value')).to_have_text('-42 dBm')
+    expect(page.locator('#radio-frame')).to_have_text('95 bytes')
+    expect(page.locator('#radio-snr')).to_have_text('9.5 dB')
+    expect(page.locator('#image-state')).to_have_text('Server SHA-256 verified')
+    expect(page.locator('#received-image')).to_be_visible()
+    page.wait_for_function('document.getElementById("received-image").naturalWidth === 64')
+    page.locator('#image-open').click()
+    expect(page.locator('#image-dialog')).to_be_visible()
+    expect(page.locator('#image-dialog-title')).to_contain_text('AABBCCDD')
+    page.keyboard.press('Escape')
+    expect(page.locator('#image-dialog')).not_to_be_visible()
+    assert page.locator('#image-download').get_attribute('href').endswith('?download=true')
+    for width in (320,390,768,1440):
+        page.set_viewport_size({'width':width,'height':900})
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), f'Ledger overflow at {width}px'
+    snapshot['transfers'][0]['image'] = None
+    snapshot['transfers'][0]['radio'] = None
+    expect(page.locator('#image-open')).to_be_disabled()
+    expect(page.locator('#received-image')).not_to_be_visible()
+    expect(page.locator('#signal-label')).to_have_text('No recorded radio measurements')
     page.unroute('**/api/dashboard')
     page.emulate_media(reduced_motion='reduce')
     expect(page.locator('#motion-toggle')).to_have_text('Motion reduced')

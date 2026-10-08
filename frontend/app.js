@@ -29,6 +29,18 @@ function demoData() {
           total: 156,
           received: 156,
           status: "verified",
+          radio: {
+            rssi_dbm: -42,
+            snr_db: 9.5,
+            packet_bytes: 95,
+            payload_bytes: 87,
+            samples: 159,
+            rssi_mean: -43,
+            snr_mean: 9.2,
+            rssi_min: -47,
+            rssi_max: -40,
+            observed_frame_bytes: 33700,
+          },
           observed_chunks: Array.from({ length: 156 }, (_, i) => i + 1),
         },
       ],
@@ -124,13 +136,35 @@ function render() {
     row.append(
       node("td", t.bytes ? `${(t.bytes / 1024).toFixed(1)} KB` : "—"),
       node("td", `${t.received} / ${t.total ?? "?"}`),
+      node(
+        "td",
+        t.radio
+          ? `${t.radio.rssi_dbm} dBm / ${t.radio.snr_db} dB`
+          : "Not recorded",
+      ),
+      node("td", t.radio ? `${t.radio.packet_bytes} B` : "—"),
     );
     const state = node("td");
     state.append(node("span", t.status.toUpperCase(), `badge ${t.status}`));
     row.append(state);
+    const imageCell = node("td");
+    if (imageUrl(t)) {
+      const view = node("button", "View ↗");
+      view.onclick = () => {
+        selected = t.transfer_id;
+        render();
+        openImage();
+      };
+      imageCell.append(view);
+    } else
+      imageCell.append(
+        node("span", demo ? "Demo" : "Awaiting export", "image-pending"),
+      );
+    row.append(imageCell);
     $("transfer-rows").append(row);
   }
   $("transfer-empty").hidden = d.transfers.length > 0;
+  renderTransferDetails(transfer);
   text("packet-title", `PACKET MAP / ${transfer?.transfer_id ?? "WAITING"}`);
   $("packet-map").replaceChildren();
   const observed = new Set(transfer?.observed_chunks ?? []),
@@ -193,6 +227,91 @@ function render() {
     }),
   );
 }
+function imageUrl(transfer) {
+  return !demo &&
+    /^[A-F0-9]{8}$/.test(transfer?.transfer_id ?? "") &&
+    transfer?.image
+    ? `/api/transfers/${transfer.transfer_id}/image`
+    : null;
+}
+function renderTransferDetails(transfer) {
+  const radio = transfer?.radio;
+  text(
+    "signal-label",
+    radio
+      ? radio.rssi_dbm >= -80
+        ? "Strong received power"
+        : radio.rssi_dbm >= -100
+          ? "Moderate received power"
+          : "Low received power"
+      : "No recorded radio measurements",
+  );
+  text("signal-value", radio ? `${radio.rssi_dbm} dBm` : "—");
+  $("signal-meter").value = radio?.rssi_dbm ?? -140;
+  $("signal-meter").hidden = !radio;
+  text("radio-snr", radio ? `${radio.snr_db} dB` : "—");
+  text("radio-frame", radio ? `${radio.packet_bytes} bytes` : "—");
+  text("radio-payload", radio ? `${radio.payload_bytes} bytes` : "—");
+  text(
+    "radio-average",
+    radio ? `${radio.rssi_mean} dBm / ${radio.snr_mean} dB` : "—",
+  );
+  text(
+    "radio-range",
+    radio ? `${radio.rssi_min} to ${radio.rssi_max} dBm` : "—",
+  );
+  text(
+    "radio-observed",
+    radio
+      ? `${radio.samples} / ${radio.observed_frame_bytes.toLocaleString()} B`
+      : "—",
+  );
+  const url = imageUrl(transfer);
+  const image = $("received-image");
+  image.hidden = !url;
+  $("image-placeholder").hidden = !!url;
+  text(
+    "image-placeholder",
+    demo
+      ? "Demo illustrates signal details. It does not contain a received photograph."
+      : transfer?.status === "verified"
+        ? "Verified on the ESP32. Waiting for USB export and server checksum verification."
+        : "The receiver must complete and verify this image before export.",
+  );
+  text("image-state", url ? "Server SHA-256 verified" : "Waiting for export");
+  if (url && image.getAttribute("src") !== url) image.src = url;
+  if (!url) image.removeAttribute("src");
+  $("image-open").disabled = !url;
+  $("image-download").hidden = !url;
+  if (url) $("image-download").href = `${url}?download=true`;
+  else $("image-download").removeAttribute("href");
+  text(
+    "image-hash",
+    transfer?.image
+      ? `SHA-256 ${transfer.image.sha256}`
+      : "Full SHA-256 will appear after server verification.",
+  );
+}
+function openImage() {
+  const transfer = current?.transfers.find(
+    (item) => item.transfer_id === selected,
+  );
+  const url = imageUrl(transfer);
+  if (!url) return;
+  $("image-full").src = url;
+  text("image-dialog-title", `Received image / ${transfer.transfer_id}`);
+  $("image-dialog").showModal();
+}
+$("image-open").onclick = openImage;
+$("image-close").onclick = () => $("image-dialog").close();
+$("received-image").onerror = () => {
+  $("received-image").hidden = true;
+  $("image-placeholder").hidden = false;
+  text(
+    "image-placeholder",
+    "Image could not be loaded. Check the server connection and select the transfer again.",
+  );
+};
 function renderSensor() {
   const samples = sensor.samples,
     useCorrected = $("corrected").checked;

@@ -2,7 +2,7 @@
 
 For the next real-sensor and classification tests, follow [NEXT_TESTS.md](NEXT_TESTS.md). It includes LAN setup, capture isolation, bias reset and the real-classifier publisher.
 
-This adds a backend, responsive dashboard, durable host gateway and MPU6050 bias calibration. The hardware folder is unchanged. Python 3.10+ is required. No Node build is required: the frontend is served by the API, with no CDN or external font dependency.
+This adds a backend, responsive dashboard, durable host gateway and MPU6050 bias calibration. The next evolution also adds receiver radio measurements and completed-JPEG export: follow [RECEIVED_IMAGES.md](RECEIVED_IMAGES.md) to update the ESP32 and use the new USB gateway. Python 3.10+ is required. No Node build is required: the frontend is served by the API, with no CDN or external font dependency.
 
 ## Run on Windows
 
@@ -108,4 +108,4 @@ Deployment requires a hosting account and domain/URL. No public deployment is cr
 
 Run automated software checks with `python -m unittest discover -s tests -v`. For optional browser checks, install `playwright==1.63.0`, run `python -m playwright install chromium`, start the API on port 8000, then run `python tests/browser_smoke.py`. On Linux you can set `CHROMIUM_PATH=/usr/bin/chromium` to use installed Chromium. GitHub Actions runs both suites. These checks do not verify radios or MPU6050 hardware.
 
-Still pending: JPEG export from ESP32 to host (an ESP32 path is not a browser image URL), structured ML/LoRa telemetry export, mission scheduling, session IDs and the Pi final-ACK fix. This release displays the data currently available and avoids inventing image thumbnails, link RSSI or classifier outputs.
+Receiver JPEG export, server verification and recorded RSSI/SNR are now implemented; physical acceptance is described in [RECEIVED_IMAGES.md](RECEIVED_IMAGES.md). Still pending: structured ML/LoRa telemetry export, mission scheduling, session IDs and the Pi final-ACK fix. Existing records without radio samples remain labelled "Not recorded"; they cannot be retroactively measured.

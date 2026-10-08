@@ -1,5 +1,6 @@
 """AeroLink ground API. Run: python -m uvicorn backend.app:app --port 8000."""
 import hmac
+import hashlib
 import json
 import math
 import os
@@ -9,6 +10,9 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
+
+from PIL import Image, UnidentifiedImageError
+from io import BytesIO
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -26,7 +30,7 @@ def now():
 class Event(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     event_id: str = Field(min_length=1, max_length=180)
-    type: Literal['receiver_ready', 'manifest', 'chunk', 'image_complete', 'telemetry', 'classification']
+    type: Literal['receiver_ready', 'manifest', 'chunk', 'image_complete', 'telemetry', 'classification', 'rf_sample']
     transfer_id: str | None = Field(default=None, pattern=r'^[0-9a-fA-F]{8}$')
     received_at: datetime | None = None
     device: str = Field(default='AEROLINK-01', min_length=1, max_length=64)
@@ -47,6 +51,12 @@ class Event(BaseModel):
     image_id: str | None = Field(default=None, min_length=1, max_length=128)
     capture_id: str | None = Field(default=None, min_length=1, max_length=128)
     recommended_action: Literal['keep', 'defer', 'discard'] | None = None
+    sha256: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
+    rssi_dbm: float | None = Field(default=None, ge=-200, le=0)
+    snr_db: float | None = Field(default=None, ge=-40, le=40)
+    packet_bytes: int | None = Field(default=None, ge=8, le=255)
+    payload_bytes: int | None = Field(default=None, ge=0, le=247)
+    sequence: int | None = Field(default=None, ge=0, le=65535)
 
     @model_validator(mode='after')
     def validate_payload(self):
@@ -56,6 +66,13 @@ class Event(BaseModel):
             raise ValueError('transfer_id required')
         if self.transfer_id:
             self.transfer_id = self.transfer_id.upper()
+        if self.sha256 and self.transfer_id and self.sha256[:8].upper() != self.transfer_id:
+            raise ValueError('sha256 does not match transfer_id')
+        if self.type == 'rf_sample':
+            if None in (self.rssi_dbm, self.snr_db, self.packet_bytes, self.payload_bytes, self.sequence):
+                raise ValueError('rf_sample requires radio measurements and sequence')
+            if self.packet_bytes != self.payload_bytes + 8:
+                raise ValueError('frame length must equal payload plus eight protocol bytes')
         if self.type == 'manifest':
             if None in (self.bytes, self.chunks, self.chunk_size):
                 raise ValueError('manifest requires bytes, chunks, chunk_size')
@@ -111,7 +128,13 @@ def create_app(db_path=None):
             CREATE TABLE IF NOT EXISTS chunks (transfer_id TEXT, chunk INTEGER,
                 PRIMARY KEY(transfer_id, chunk));
             CREATE TABLE IF NOT EXISTS calibrations (device TEXT PRIMARY KEY, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS images (transfer_id TEXT PRIMARY KEY,
+                sha256 TEXT NOT NULL, bytes INTEGER NOT NULL, saved_at TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS transfer_event_lookup ON events(type, json_extract(payload,'$.transfer_id'), seq);
         ''')
+
+    image_directory = database.parent / 'images'
+    image_directory.mkdir(exist_ok=True)
 
     app = FastAPI(title='AeroLink Ground API', version='1.0.0')
 
@@ -126,11 +149,12 @@ def create_app(db_path=None):
     @app.middleware('http')
     async def headers(request, call_next):
         # The ingestion clients send bounded JSON; reject oversized bodies before parsing.
-        if request.method == 'POST':
+        if request.method in ('POST', 'PUT'):
             length = request.headers.get('content-length', '')
-            if not length.isdigit() or int(length) > 16384:
+            maximum = 512000 if request.method == 'PUT' and request.url.path.startswith('/api/transfers/') else 16384
+            if not length.isdigit() or int(length) > maximum:
                 from fastapi.responses import JSONResponse
-                return JSONResponse({'detail': 'Content-Length required; maximum 16 KB'}, status_code=413)
+                return JSONResponse({'detail': f'Content-Length required; maximum {maximum} bytes'}, status_code=413)
         response = await call_next(request)
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Content-Security-Policy'] = "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
@@ -184,13 +208,87 @@ def create_app(db_path=None):
             transfers = [dict(r) for r in conn.execute('SELECT * FROM transfers ORDER BY updated_at DESC LIMIT 100')]
             for item in transfers:
                 item['observed_chunks'] = [r[0] for r in conn.execute('SELECT chunk FROM chunks WHERE transfer_id=? ORDER BY chunk', (item['transfer_id'],))]
+                rf = conn.execute("SELECT payload,ingested_at FROM events WHERE type='rf_sample' AND json_extract(payload,'$.transfer_id')=? ORDER BY seq DESC LIMIT 1", (item['transfer_id'],)).fetchone()
+                item['radio'] = None
+                if rf:
+                    stats = conn.execute('''SELECT COUNT(*) AS samples,
+                        MIN(json_extract(payload,'$.rssi_dbm')) AS rssi_min,
+                        MAX(json_extract(payload,'$.rssi_dbm')) AS rssi_max,
+                        ROUND(AVG(json_extract(payload,'$.rssi_dbm')),2) AS rssi_mean,
+                        ROUND(AVG(json_extract(payload,'$.snr_db')),2) AS snr_mean,
+                        SUM(json_extract(payload,'$.packet_bytes')) AS observed_frame_bytes
+                        FROM events WHERE type='rf_sample' AND json_extract(payload,'$.transfer_id')=?''', (item['transfer_id'],)).fetchone()
+                    sample = json.loads(rf['payload'])
+                    item['radio'] = dict(stats) | {k: sample[k] for k in ('rssi_dbm', 'snr_db', 'packet_bytes', 'payload_bytes')}
+                    item['radio']['measured_at'] = sample.get('received_at', rf['ingested_at'])
+                image = conn.execute('SELECT * FROM images WHERE transfer_id=?', (item['transfer_id'],)).fetchone()
+                item['image'] = dict(image) | {'url': f"/api/transfers/{item['transfer_id']}/image"} if image and (image_directory / f"{image['sha256']}.jpg").is_file() else None
             latest = conn.execute('SELECT ingested_at FROM events ORDER BY seq DESC LIMIT 1').fetchone()
             count = conn.execute('SELECT COUNT(*) FROM events').fetchone()[0]
             verified = conn.execute("SELECT COUNT(*) FROM transfers WHERE status='verified'").fetchone()[0]
             recent = [json.loads(r['payload']) | {'ingested_at': r['ingested_at']} for r in conn.execute('SELECT * FROM events ORDER BY seq DESC LIMIT 12')]
             classifications = [json.loads(r['payload']) | {'ingested_at': r['ingested_at']} for r in conn.execute("SELECT * FROM events WHERE type='classification' ORDER BY seq DESC LIMIT 20")]
         return {'event_count': count, 'verified_count': verified, 'last_event_at': latest[0] if latest else None,
-                'transfers': transfers, 'recent_events': recent, 'classifications': classifications, 'image_download_available': False}
+                'transfers': transfers, 'recent_events': recent, 'classifications': classifications,
+                'image_download_available': any(t['image'] for t in transfers)}
+
+    def transfer_name(value):
+        import re
+        if not re.fullmatch(r'[0-9a-fA-F]{8}', value):
+            raise HTTPException(422, 'Transfer ID must be eight hexadecimal characters')
+        return value.upper()
+
+    @app.put('/api/transfers/{transfer_id}/image', dependencies=[Depends(authorize)])
+    async def store_image(transfer_id: str, request: Request):
+        identity = transfer_name(transfer_id)
+        if request.headers.get('content-type', '').split(';')[0] != 'image/jpeg':
+            raise HTTPException(415, 'Send image/jpeg bytes')
+        with db() as conn:
+            transfer = conn.execute('SELECT * FROM transfers WHERE transfer_id=?', (identity,)).fetchone()
+            manifest = conn.execute("SELECT payload FROM events WHERE type='manifest' AND json_extract(payload,'$.transfer_id')=? ORDER BY seq DESC LIMIT 1", (identity,)).fetchone()
+        if not transfer or transfer['status'] != 'verified' or not manifest:
+            raise HTTPException(409, 'A receiver-verified transfer and manifest are required first')
+        expected = json.loads(manifest[0]).get('sha256')
+        if not expected:
+            raise HTTPException(409, 'Manifest lacks full SHA-256; resend with updated receiver firmware')
+        content = bytearray()
+        async for block in request.stream():
+            content.extend(block)
+            if len(content) > 512000:
+                raise HTTPException(413, 'JPEG exceeds export limit')
+        digest = hashlib.sha256(content).hexdigest()
+        if len(content) != transfer['bytes'] or digest != expected:
+            raise HTTPException(422, 'JPEG byte count or full SHA-256 does not match receiver manifest')
+        try:
+            with Image.open(BytesIO(content)) as image:
+                if image.format != 'JPEG' or image.width * image.height > 20000000:
+                    raise ValueError('Expected JPEG up to 20 megapixels')
+                image.load() # Decode as well as inspect the header; reject truncated/corrupt JPEGs.
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as error:
+            raise HTTPException(422, 'Invalid or oversized JPEG') from error
+        # Content-addressed immutable files; atomic replacement never exposes partial bytes.
+        import tempfile
+        with tempfile.NamedTemporaryFile(dir=image_directory, suffix='.part', delete=False) as file:
+            temporary = Path(file.name)
+            file.write(content)
+        try:
+            temporary.replace(image_directory / f'{digest}.jpg')
+            with db() as conn:
+                conn.execute('INSERT OR REPLACE INTO images VALUES(?,?,?,?)', (identity, digest, len(content), now()))
+        finally:
+            temporary.unlink(missing_ok=True)
+        return {'stored': True, 'transfer_id': identity, 'sha256': digest, 'bytes': len(content)}
+
+    @app.get('/api/transfers/{transfer_id}/image')
+    def view_image(transfer_id: str, download: bool = False):
+        identity = transfer_name(transfer_id)
+        with db() as conn:
+            record = conn.execute('SELECT * FROM images WHERE transfer_id=?', (identity,)).fetchone()
+        if not record or not (image_directory / f"{record['sha256']}.jpg").is_file():
+            raise HTTPException(404, 'Receiver image has not been exported to the server')
+        return FileResponse(image_directory / f"{record['sha256']}.jpg", media_type='image/jpeg',
+                            filename=f'{identity}.jpg' if download else None,
+                            headers={'ETag': f'"{record["sha256"]}"', 'Cache-Control': 'no-cache'})
 
     @app.get('/api/telemetry')
     def telemetry(device: str = 'AEROLINK-01', limit: int = Query(default=100, ge=1, le=500)):
